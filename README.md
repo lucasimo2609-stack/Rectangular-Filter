@@ -1,0 +1,114 @@
+# Rectangular Filter
+
+Web app per **PC e iPad** che usa la webcam o la fotocamera, riconosce le mani e crea un **rettangolo dinamico** con le punte di **pollici e indici**. Dentro il rettangolo viene applicato il filtro che scegli, come nei reel fatti con TouchDesigner.
+
+- Gira tutta nel browser: niente da installare e nessuna immagine inviata a server.
+- Riconoscimento mani con [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) (fino a 2 mani, 21 punti ciascuna).
+- Filtri in WebGL in tempo reale, ritagliati sul quadrilatero formato dalle dita.
+
+## Come si usa
+
+1. Apri l'app e premi **Avvia fotocamera** (concedi il permesso alla fotocamera).
+2. Mostra le mani alla fotocamera:
+   - **Due mani**: i due **indici** sono gli angoli in alto e i due **pollici** quelli in basso, come nel reel. Muovendo le mani il quadrilatero si deforma, si ruota e può anche incrociarsi.
+   - **Una mano**: pollice e indice diventano due angoli opposti di un rettangolo. Allargali o avvicinali per cambiarne la dimensione.
+   - Se chiudi le dita (pollice contro indice) il rettangolo sparisce.
+3. Scegli il filtro dalla barra in basso.
+4. Con il pulsante bianco scatti una **foto**, con quello rosso registri un **video**. Su iPad, *Salva / Condividi* ti permette di salvarli nel Rullino.
+
+> Senza mani puoi anche **trascinare col dito o col mouse** per disegnare un rettangolo, utile per provare i filtri. Un tocco senza trascinare lo cancella.
+
+### Effetto "Invisibile" (sparire dentro il rettangolo)
+
+1. Metti il dispositivo **fermo** (su un supporto o un treppiede).
+2. Premi l'icona **Cattura sfondo** in alto a destra (oppure scegli il filtro *Invisibile*): parte un conto alla rovescia, durante il quale **esci dall'inquadratura**.
+3. Quando lo sfondo vuoto è stato salvato, rientra e fai il rettangolo con le mani: tutto ciò che c'è dentro viene sostituito dallo sfondo e il tuo corpo "sparisce".
+
+Consigli: luce costante, niente oggetti che si muovono sullo sfondo, fotocamera immobile. Se cambi fotocamera devi ricatturare lo sfondo.
+
+### Filtri disponibili
+
+| # | Filtro | Effetto |
+|---|--------|---------|
+| 1 | Acido | Colori psichedelici animati in stile reel |
+| 2 | Bianco e nero | Scala di grigi con un po' di contrasto |
+| 3 | Invisibile | Mostra lo sfondo catturato, così sparisci |
+| 4 | Termico | Look da termocamera |
+| 5 | Negativo | Colori invertiti |
+| 6 | Pixel | Pixel art a blocchi |
+| 7 | Neon | Contorni luminosi colorati su nero |
+| 8 | Glitch | Separazione RGB, strappi e scanline |
+| 9 | Fumetto | Colori piatti, contorni neri e retino |
+| 0 | Sfocato | Sfocatura forte, utile anche per la privacy |
+| – | Raggi X | Negativo azzurro con contorni |
+| – | Caleidoscopio | Specchi radiali attorno al centro del rettangolo |
+
+### Impostazioni (icona con i cursori)
+
+- **Forma**: automatica (1 o 2 mani), solo due mani, oppure una mano.
+- **Applica il filtro**: dentro o **fuori** dal rettangolo (anche con il pulsante a sinistra dello scatto).
+- Mostra/nascondi i punti delle mani, bordo del rettangolo, effetto specchio.
+- **Stabilizzazione**: riduce il tremolio degli angoli (One Euro filter).
+- **Sfumatura bordi**, **timer cattura sfondo**, **qualità di rendering**.
+- **Motore riconoscimento mani**: *Automatico* (GPU, con passaggio alla CPU in caso di errore), *GPU* o *CPU*. Se su un dispositivo le mani non vengono riconosciute, prova *CPU*.
+
+### Scorciatoie da tastiera (PC)
+
+`1`–`9`, `0` filtri · `←` `→` filtro precedente/successivo · `B` cattura sfondo · `I` dentro/fuori · `P` o `Spazio` foto · `R` video · `C` cambia fotocamera · `S` impostazioni · `H` nascondi interfaccia · `F` schermo intero · `Esc` chiudi
+
+## Avvio
+
+Il browser concede la fotocamera solo su **HTTPS** oppure su **`http://localhost`**, quindi aprire `index.html` con un doppio clic non basta: serve un piccolo server.
+
+### Sul PC (Windows, macOS, Linux)
+
+Dalla cartella del progetto:
+
+```bash
+python3 -m http.server 8000
+# oppure
+npx serve .
+```
+
+Poi apri <http://localhost:8000> in Chrome, Edge, Safari o Firefox.
+
+### Su iPad (o iPhone)
+
+Serve un indirizzo **https://**. Il modo più semplice è **GitHub Pages**, già configurato in questo repository:
+
+1. Su GitHub: **Settings › Pages › Build and deployment › Source: GitHub Actions**.
+2. Ogni push sul branch principale pubblica l'app (workflow `.github/workflows/pages.yml`). Puoi anche lanciarlo a mano da **Actions › Pubblica su GitHub Pages › Run workflow**.
+3. Apri su iPad, in Safari, `https://lucasimo2609-stack.github.io/Rectangular-Filter/`.
+4. *(Facoltativo)* Condividi › **Aggiungi alla schermata Home**: l'app si apre a schermo intero come un'app normale.
+
+> Con un account GitHub gratuito, GitHub Pages funziona solo se il repository è **pubblico**. In alternativa puoi trascinare la cartella su [Netlify Drop](https://app.netlify.com/drop), oppure usare Vercel o Cloudflare Pages: tutti offrono HTTPS gratis.
+
+Requisiti: iPadOS 16.4 o successivo (Safari), oppure un browser recente su PC. Al **primo avvio** serve internet per scaricare il modello delle mani (~8 MB) e la libreria MediaPipe. Dopo, il browser li tiene in cache.
+
+## Risoluzione problemi
+
+- **"Permesso fotocamera negato"**: su iPad vai in *Impostazioni › Safari › Fotocamera* e scegli *Chiedi* o *Consenti*. Su PC usa l'icona del lucchetto nella barra degli indirizzi.
+- **Le mani non vengono riconosciute**: serve più luce e le mani devono essere ben visibili, non troppo vicine al bordo. Prova *Impostazioni › Motore: CPU*, oppure apri l'app con `?cpu` in fondo all'indirizzo.
+- **Va a scatti**: imposta *Qualità di rendering: Bassa* e chiudi le altre app o schede che usano la fotocamera.
+- **"Invisibile" lascia aloni**: ricattura lo sfondo con la stessa luce e la fotocamera ferma. L'esposizione automatica della fotocamera può cambiare un po' i colori.
+
+## Struttura del progetto
+
+```
+index.html              interfaccia
+css/style.css           stile
+js/main.js              avvio, fotocamera, geometria del rettangolo, UI
+js/tracker.js           MediaPipe Hand Landmarker (GPU/CPU)
+js/renderer.js          WebGL: video + maschera del quadrilatero (SDF) + filtro
+js/filters.js           elenco filtri e codice GLSL di ciascuno
+js/smoothing.js         One Euro filter per stabilizzare gli angoli
+js/capture.js           foto e registrazione video (MediaRecorder)
+manifest.webmanifest    installazione come app (PWA)
+```
+
+### Aggiungere un filtro
+
+1. In `js/filters.js` aggiungi una voce in `FILTERS` con un nuovo `id`.
+2. Nella funzione GLSL `applyFilter` aggiungi un blocco `if (uFilter == <id>) { ... return colore; }`. Hai a disposizione `uv` (coordinate del video), `p` (pixel sullo schermo), `c` (colore originale) e gli helper `vid()`, `luma()`, `sobel()`, `blurAt()`, `hsv2rgb()`.
+
+Il quadrilatero è definito dagli angoli `[indice sinistro, indice destro, pollice destro, pollice sinistro]`. Nello shader viene calcolata la sua distanza con segno (regola pari-dispari), quindi bordi sfumati e forme incrociate "a farfalla" funzionano senza casi speciali.

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>Rectangular Filter</title>
+  <meta name="description" content="Crea un rettangolo con pollici e indici davanti alla webcam e applica un filtro solo al suo interno." />
+  <meta name="theme-color" content="#000000" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="RectFilter" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <main id="stage" aria-label="Anteprima fotocamera">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="gl"></canvas>
+    <canvas id="overlay"></canvas>
+  </main>
+
+  <!-- Status pill -->
+  <div id="status" class="pill hud" aria-live="polite">
+    <span id="status-dot" class="dot"></span>
+    <span id="status-text">In attesa</span>
+  </div>
+
+  <!-- Top-right toolbar -->
+  <div id="toolbar" class="hud">
+    <button class="icon-btn" id="btn-bg" title="Cattura sfondo (B)" aria-label="Cattura sfondo">
+      <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-switch" title="Cambia fotocamera (C)" aria-label="Cambia fotocamera" hidden>
+      <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><path d="M9 13a3 3 0 0 1 5.2-2M15 13a3 3 0 0 1-5.2 2"/><path d="M14.5 9.5v1.7h-1.7M9.5 16.5v-1.7h1.7"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-full" title="Schermo intero (F)" aria-label="Schermo intero">
+      <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-settings" title="Impostazioni (S)" aria-label="Impostazioni">
+      <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+    </button>
+    <button class="icon-btn" id="btn-hide" title="Nascondi interfaccia (H)" aria-label="Nascondi interfaccia">
+      <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path d="M4 20L20 4"/></svg>
+    </button>
+  </div>
+
+  <button class="icon-btn small" id="btn-hide-restore" title="Mostra interfaccia (H)" aria-label="Mostra interfaccia">
+    <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+  </button>
+
+  <!-- Bottom controls -->
+  <div id="bottom" class="hud">
+    <div id="capture-row">
+      <button class="icon-btn small" id="btn-invert" title="Filtro dentro / fuori (I)" aria-label="Filtro dentro o fuori dal rettangolo">
+        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="8" y="8" width="8" height="8" class="fill"/></svg>
+      </button>
+      <button id="btn-photo" class="shutter" title="Scatta foto (P)" aria-label="Scatta foto"></button>
+      <button id="btn-rec" class="rec" title="Registra video (R)" aria-label="Registra video"><span></span></button>
+    </div>
+    <div id="filters" role="radiogroup" aria-label="Filtri"></div>
+  </div>
+
+  <!-- Recording timer -->
+  <div id="rec-timer" class="pill" hidden><span class="dot rec-dot"></span><span id="rec-time">00:00</span></div>
+
+  <!-- Countdown -->
+  <div id="countdown" hidden>
+    <div id="countdown-num">3</div>
+    <div id="countdown-msg">Esci dall'inquadratura</div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" role="status" hidden></div>
+
+  <!-- Start screen -->
+  <section id="start" class="screen">
+    <div class="card">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 120 80">
+          <path class="hand" d="M14 64 L14 22 M14 64 L52 64" />
+          <path class="hand" d="M106 16 L106 58 M106 16 L68 16" />
+          <polygon class="quad" points="14,22 106,16 106,58 52,64" />
+          <circle cx="14" cy="22" r="4"/><circle cx="52" cy="64" r="4"/>
+          <circle cx="106" cy="58" r="4"/><circle cx="68" cy="16" r="4"/>
+        </svg>
+      </div>
+      <h1>Rectangular Filter</h1>
+      <p class="lead">Forma un rettangolo con <b>pollici</b> e <b>indici</b> davanti alla fotocamera: il filtro scelto appare solo lì dentro.</p>
+      <ul class="tips">
+        <li><b>Due mani</b>: gli indici sono gli angoli in alto, i pollici quelli in basso.</li>
+        <li><b>Una mano</b>: pollice e indice sono due angoli opposti del rettangolo.</li>
+        <li><b>Invisibile</b>: cattura lo sfondo vuoto, poi il rettangolo ti fa sparire.</li>
+      </ul>
+      <label class="field">
+        <span>Fotocamera</span>
+        <select id="start-camera">
+          <option value="user">Frontale / webcam</option>
+          <option value="environment">Posteriore</option>
+        </select>
+      </label>
+      <button id="btn-start" class="primary">Avvia fotocamera</button>
+      <p id="start-error" class="error" hidden></p>
+      <p class="fine">Tutto avviene sul tuo dispositivo: nessuna immagine viene inviata a server.</p>
+    </div>
+  </section>
+
+  <!-- Settings sheet -->
+  <aside id="settings" class="sheet" hidden aria-label="Impostazioni">
+    <header>
+      <h2>Impostazioni</h2>
+      <button class="icon-btn small" id="btn-settings-close" aria-label="Chiudi">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <label class="field">
+      <span>Forma del rettangolo</span>
+      <select id="opt-shape">
+        <option value="auto">Automatica (1 o 2 mani)</option>
+        <option value="two">Solo con due mani</option>
+        <option value="one">Una mano (pollice ↔ indice)</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Applica il filtro</span>
+      <select id="opt-invert">
+        <option value="0">Dentro il rettangolo</option>
+        <option value="1">Fuori dal rettangolo</option>
+      </select>
+    </label>
+    <label class="switch"><input type="checkbox" id="opt-skeleton" checked /><span>Mostra le mani (punti e linee)</span></label>
+    <label class="switch"><input type="checkbox" id="opt-outline" /><span>Bordo del rettangolo</span></label>
+    <label class="switch"><input type="checkbox" id="opt-mirror" checked /><span>Effetto specchio</span></label>
+    <label class="field">
+      <span>Stabilizzazione <output id="opt-smooth-val">5</output></span>
+      <input type="range" id="opt-smooth" min="0" max="10" step="1" value="5" />
+    </label>
+    <label class="field">
+      <span>Sfumatura bordi <output id="opt-feather-val">2</output></span>
+      <input type="range" id="opt-feather" min="0" max="30" step="1" value="2" />
+    </label>
+    <label class="field">
+      <span>Timer cattura sfondo</span>
+      <select id="opt-timer">
+        <option value="0">Immediato</option>
+        <option value="3">3 secondi</option>
+        <option value="5" selected>5 secondi</option>
+        <option value="10">10 secondi</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Qualità di rendering</span>
+      <select id="opt-quality">
+        <option value="1">Alta (risoluzione schermo)</option>
+        <option value="0.75" selected>Media</option>
+        <option value="0.5">Bassa (più fluida)</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Motore riconoscimento mani <output id="opt-engine-val"></output></span>
+      <select id="opt-engine">
+        <option value="auto">Automatico</option>
+        <option value="GPU">GPU (più veloce)</option>
+        <option value="CPU">CPU (più compatibile)</option>
+      </select>
+    </label>
+    <div class="row">
+      <button id="btn-bg-clear" class="secondary">Elimina sfondo catturato</button>
+    </div>
+    <p class="fine">Scorciatoie da tastiera: 1–9 e 0 filtri · B sfondo · I dentro/fuori · P foto · R video · C fotocamera · H nascondi · F schermo intero</p>
+  </aside>
+
+  <!-- Media preview -->
+  <section id="preview" class="screen" hidden>
+    <div class="card wide">
+      <div id="preview-media"></div>
+      <div class="row">
+        <button id="btn-share" class="primary">Salva / Condividi</button>
+        <a id="btn-download" class="secondary" download>Scarica</a>
+        <button id="btn-preview-close" class="secondary">Chiudi</button>
+      </div>
+    </div>
+  </section>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
