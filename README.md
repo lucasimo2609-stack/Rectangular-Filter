@@ -107,6 +107,10 @@ Requisiti: iPadOS/iOS 16.4 o successivo (Safari), Chrome su Android, oppure un b
 - **"Invisibile" o la sparizione lasciano aloni**: ricattura lo sfondo con la stessa luce e la fotocamera ferma. L'esposizione automatica della fotocamera può cambiare un po' i colori.
 - **Il gesto ✊ → ✌️ non scatta**: tieni la mano rivolta verso la fotocamera, fai un pugno ben chiuso e una V con le dita ben aperte. Fai la V entro circa 1,5 secondi dal pugno.
 
+## Come funziona (computer vision)
+
+La spiegazione completa di come funzionano riconoscimento delle mani, filtro One Euro, maschera del quadrilatero, filtri, riconoscimento dei gesti e sparizione, con formule e schemi, è in [`docs/computer-vision.pdf`](docs/computer-vision.pdf). Il sorgente LaTeX è [`docs/computer-vision.tex`](docs/computer-vision.tex) e si compila con `pdflatex` (servono i pacchetti `babel-italian`, `tikz` e `listings`).
+
 ## Struttura del progetto
 
 ```

@@ -1,0 +1,730 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[italian]{babel}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,calc,decorations.pathreplacing,shapes.geometric}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1F9D55}
+\definecolor{hand}{HTML}{E0262B}
+\definecolor{dot}{HTML}{22C443}
+
+\lstdefinelanguage{GLSL}{
+  language=C,
+  morekeywords={vec2,vec3,vec4,uniform,sampler2D,texture2D,mix,smoothstep,clamp,max,min,length},
+}
+\lstset{
+  language=GLSL,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{accent!70!black}\bfseries,
+  commentstyle=\color{gray}\itshape,
+  frame=single,
+  rulecolor=\color{gray!40},
+  xleftmargin=1em,
+  framexleftmargin=0.6em,
+  columns=fullflexible,
+}
+
+\newcommand{\Sm}{\operatorname{S}}
+\newcommand{\clamp}{\operatorname{clamp}}
+\newcommand{\vect}[1]{\mathbf{#1}}
+
+\title{La computer vision dietro \emph{Rectangular Filter}\\[4pt]
+\large Mani, rettangoli, filtri e come far sparire una persona}
+\author{Documentazione tecnica del progetto}
+\date{Novembre 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent \emph{Rectangular Filter} è una web app che, a partire dal flusso della fotocamera,
+riconosce le mani, costruisce un quadrilatero con le punte di pollici e indici e applica un
+filtro solo al suo interno. Un gesto (pugno seguito da una V) fa sparire la persona dalla scena,
+lasciando visibile solo lo sfondo. Questo documento spiega le tecniche di computer vision
+e di elaborazione delle immagini usate a ogni passo: le reti neurali di MediaPipe per mani e
+sagoma, la geometria del quadrilatero, il filtro One Euro, le funzioni di distanza con segno, i
+filtri come operatori sull'immagine, la classificazione delle pose della mano e il compositing
+con sottrazione dello sfondo. Tutti i numeri citati sono quelli effettivamente usati nel codice.
+\end{abstract}
+
+\setcounter{tocdepth}{2}
+{\small\tableofcontents}
+\clearpage
+
+%=====================================================================
+\section{La pipeline in un colpo d'occhio}
+%=====================================================================
+
+Ogni volta che la fotocamera produce un nuovo fotogramma (tipicamente 30 al secondo), l'app
+esegue la catena di figura~\ref{fig:pipeline}. Tutto avviene sul dispositivo: le reti neurali
+girano nel browser (WebAssembly o WebGL) e il compositing finale è uno \emph{shader} eseguito
+dalla GPU, un pixel alla volta e in parallelo.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=3pt, align=center, minimum height=11mm, text width=25mm, font=\small},
+  arr/.style={-{Stealth[length=2.2mm]}, thick, gray!70!black},
+  lab/.style={font=\scriptsize, inner sep=1.5pt}]
+  \node[box, fill=gray!10]   (cam)  at (0,0)      {Fotocamera\\\footnotesize fotogramma $I_t$};
+  \node[box, fill=blue!8]    (hand) at (3.2,1.5)  {Hand\\Landmarker\\\footnotesize 21 punti per mano};
+  \node[box, fill=purple!8]  (seg)  at (3.2,-1.5) {Selfie\\Segmenter\\\footnotesize maschera $S_t$};
+  \node[box, fill=green!8]   (quad) at (6.5,2.0)  {Quadrilatero\\\footnotesize 4 angoli, One Euro};
+  \node[box, fill=orange!12] (gest) at (6.5,0)    {Pose della mano\\\footnotesize pugno $\to$ V\\(evento)};
+  \node[box, fill=purple!8]  (mask) at (6.5,-2.0) {Maschera\\persona\\\footnotesize $S_t$ e differenza da $B$};
+  \node[box, fill=yellow!15, minimum height=18mm] (gpu) at (9.9,0) {Shader GPU\\\footnotesize SDF, filtri,\\ compositing};
+  \node[box, fill=gray!10]   (out)  at (13.0,0)   {Schermo,\\ foto, video};
+  \draw[arr] (cam) -- (hand);
+  \draw[arr] (cam) -- (seg);
+  \draw[arr] (hand) -- (quad);
+  \draw[arr] (hand) -- (gest);
+  \draw[arr] (seg) -- (mask);
+  \draw[arr] (quad.east) -- (gpu.north west);
+  \draw[arr] (gest) -- (gpu);
+  \draw[arr] (mask.east) -- (gpu.south west);
+  \draw[arr] (gpu) -- (out);
+\end{tikzpicture}
+\caption{Flusso di un fotogramma. La segmentazione viene eseguita solo mentre l'effetto
+``sparizione'' è attivo, per risparmiare calcolo.}
+\label{fig:pipeline}
+\end{figure}
+
+Il ciclo principale è guidato da \texttt{requestAnimationFrame}. Il riconoscimento delle mani
+viene eseguito solo quando il video ha davvero un fotogramma nuovo: sugli schermi a 60 o 120\,Hz
+si evita di analizzare due volte la stessa immagine.
+
+%=====================================================================
+\section{Il fotogramma e i sistemi di coordinate}
+%=====================================================================
+
+Un fotogramma è una funzione $I:\Omega\to[0,1]^3$ che associa a ogni pixel un colore RGB. Le reti
+di MediaPipe restituiscono punti in \emph{coordinate normalizzate} $(u,v)\in[0,1]^2$ rispetto al
+fotogramma originale di larghezza $w$ e altezza $h$, con $v$ che cresce verso il basso.
+
+Lo schermo (larghezza $W$, altezza $H$) ha in genere un'altra proporzione, quindi il video viene
+scalato ``a copertura'' (\emph{cover}), cioè riempie lo schermo e taglia ciò che avanza:
+\begin{equation}
+  s=\max\!\left(\frac{W}{w},\frac{H}{h}\right),\qquad
+  \vect{o}=\tfrac12\bigl(W-sw,\;H-sh\bigr),\qquad
+  \vect{p}=\vect{o}+s\,(w\,u',\,h\,v),
+\end{equation}
+dove $u'=1-u$ se si usa la fotocamera frontale (effetto specchio, come in un selfie) e $u'=u$
+altrimenti. Nello shader si usa la trasformazione inversa: per ogni pixel $\vect{p}$ dello
+schermo si calcola quale punto $(u,v)$ del video campionare.
+
+%=====================================================================
+\section{Trovare le mani: MediaPipe Hands}
+%=====================================================================
+
+Per le mani l'app usa \emph{MediaPipe Hand Landmarker}~\cite{zhang2020hands,lugaresi2019mediapipe},
+una pipeline di due reti neurali convoluzionali progettata per girare in tempo reale anche sui
+telefoni.
+
+\subsection{Primo stadio: rilevare il palmo}
+Una mano è un oggetto articolato: le dita cambiano completamente la sua forma e il suo riquadro.
+Il palmo, invece, è quasi rigido. Per questo il primo stadio (\emph{BlazePalm}) non cerca la mano
+intera ma il palmo (o il pugno). È un rilevatore a colpo singolo nello stile di
+SSD~\cite{liu2016ssd} e BlazeFace~\cite{bazarevsky2019blazeface}. Una rete
+\emph{encoder--decoder} produce mappe di caratteristiche a più scale. Per ogni
+\emph{ancora} (un riquadro di riferimento) la rete stima la probabilità che contenga un palmo
+e la correzione da applicare al riquadro, insieme ad alcuni punti chiave. Siccome i palmi sono
+circa quadrati, bastano ancore quadrate, e questo riduce molto il numero di ancore. Per
+l'addestramento si usa la \emph{focal loss}~\cite{lin2017focal}, che pesa di più gli esempi
+difficili. Infine la \emph{non-maximum suppression} elimina i riquadri duplicati.
+
+Dal palmo trovato si ricava un riquadro \emph{ruotato}: la rotazione allinea il segmento tra
+polso e base del dito medio con l'asse verticale. Il riquadro viene poi allargato abbastanza da
+contenere le dita.
+
+\subsection{Secondo stadio: i 21 punti}
+Il ritaglio ruotato (224$\times$224 pixel) passa a una seconda rete che \emph{regredisce}
+direttamente le coordinate di 21 punti anatomici (figura~\ref{fig:hand}), più un punteggio di
+presenza della mano e la sua lateralità (destra o sinistra). Ogni punto ha coordinate $(x,y,z)$:
+$x$ e $y$ sono normalizzate all'immagine, mentre $z$ è una profondità relativa con origine nel
+polso, nella stessa scala di $x$ (valori minori indicano punti più vicini alla fotocamera). La
+rete è addestrata su decine di migliaia di foto reali annotate a mano e su immagini sintetiche
+di un modello 3D della mano, in pose e sfondi molto vari.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95,
+  pt/.style={circle, fill=dot, inner sep=1.7pt},
+  tip/.style={circle, draw=black, thick, fill=dot, inner sep=2.6pt},
+  num/.style={font=\scriptsize}]
+  \foreach \i/\x/\y in {0/0/0, 1/-0.9/0.5, 2/-1.6/1.1, 3/-2.1/1.7, 4/-2.5/2.25,
+     5/-0.8/2.3, 6/-1.0/3.3, 7/-1.1/3.9, 8/-1.2/4.5,
+     9/0/2.5, 10/0/3.6, 11/0/4.3, 12/0/4.9,
+     13/0.75/2.3, 14/0.85/3.3, 15/0.9/3.9, 16/0.95/4.4,
+     17/1.4/1.9, 18/1.65/2.7, 19/1.8/3.2, 20/1.95/3.65}
+     \coordinate (p\i) at (\x,\y);
+  \foreach \a/\b in {0/1,1/2,2/3,3/4,0/5,5/6,6/7,7/8,5/9,9/10,10/11,11/12,
+                     9/13,13/14,14/15,15/16,13/17,17/18,18/19,19/20,0/17}
+     \draw[hand, line width=1.6pt] (p\a) -- (p\b);
+  \foreach \i in {0,1,2,3,5,6,7,9,10,11,12,13,14,15,16,17,18,19,20} \node[pt] at (p\i) {};
+  \node[tip] at (p4) {}; \node[tip] at (p8) {};
+  \foreach \i/\d in {0/below, 1/left, 2/left, 3/left, 4/left, 5/left, 6/left, 7/left, 8/above,
+     9/right, 10/right, 11/right, 12/above, 13/right, 14/right, 15/right, 16/above,
+     17/right, 18/right, 19/right, 20/above}
+     \node[num, \d=2pt] at (p\i) {\i};
+  \node[font=\small, align=left, anchor=west] at (3.2,3.4) {%
+    \textbf{0}\ \ polso\\
+    \textbf{1--4}\ \ pollice (CMC, MCP, IP, punta)\\
+    \textbf{5--8}\ \ indice (MCP, PIP, DIP, punta)\\
+    \textbf{9--12}\ \ medio\\
+    \textbf{13--16}\ \ anulare\\
+    \textbf{17--20}\ \ mignolo\\[4pt]
+    Cerchiati: punte di pollice (4)\\ e indice (8), cioè gli angoli\\ del rettangolo.};
+\end{tikzpicture}
+\caption{I 21 punti della mano restituiti da MediaPipe e i collegamenti che l'app disegna
+(linee rosse, punti verdi, come nel reel di riferimento).}
+\label{fig:hand}
+\end{figure}
+
+\subsection{Tracciamento nel tempo}
+In modalità \texttt{VIDEO} la pipeline non riesegue ogni volta il rilevatore di palmi, che è il
+passo più costoso. Il riquadro della mano al fotogramma $t+1$ viene ricavato dai punti trovati
+al fotogramma $t$, perché la mano si sposta poco tra due fotogrammi consecutivi. Il rilevatore
+torna in gioco solo quando il punteggio di presenza scende sotto la soglia (mano persa) o quando
+ci sono meno mani del massimo richiesto (qui 2). Per questo a ogni chiamata va passato un
+\emph{timestamp} strettamente crescente.
+
+\paragraph{GPU o CPU.} La stessa rete può essere eseguita con il \emph{delegate} GPU (WebGL) o
+CPU (WebAssembly con istruzioni SIMD tramite XNNPACK). L'app prova prima la GPU e passa alla
+CPU in caso di errore. L'utente può anche forzare la CPU dalle impostazioni.
+
+\paragraph{Lateralità.} MediaPipe assume che l'immagine in ingresso sia specchiata, come un
+selfie. L'app invece passa il fotogramma non specchiato, quindi le etichette ``destra'' e
+``sinistra'' risultano scambiate. Per questo vengono usate solo come identificatore stabile di
+ciascuna mano (\S\ref{sec:gesti}) e mai mostrate all'utente.
+
+%=====================================================================
+\section{Dai punti al quadrilatero}
+%=====================================================================
+
+Siano $\vect{a}_k$ e $\vect{b}_k$ i punti $k$ delle due mani, già convertiti in pixel dello
+schermo. Le mani vengono ordinate in base alla posizione orizzontale del polso: $\vect{a}$ è
+quella più a sinistra sullo schermo.
+
+\begin{description}
+  \item[Due mani.] Come nel reel, il quadrilatero è
+  $Q=(\vect{a}_8,\,\vect{b}_8,\,\vect{b}_4,\,\vect{a}_4)$: gli indici sono gli angoli in alto e i
+  pollici quelli in basso.
+  \item[Una mano.] Con punta del pollice $\vect{t}=\vect{p}_4$ e punta dell'indice
+  $\vect{i}=\vect{p}_8$, il rettangolo è quello allineato agli assi che ha $\vect{t}$ e $\vect{i}$
+  come vertici opposti: $[\min(t_x,i_x),\max(t_x,i_x)]\times[\min(t_y,i_y),\max(t_y,i_y)]$.
+\end{description}
+
+Le mani che stanno facendo il gesto pugno o V (\S\ref{sec:gesti}) vengono escluse, così il
+gesto non disegna rettangoli per sbaglio.
+
+\paragraph{Quando mostrarlo.} Se le dita si chiudono il quadrilatero degenera. L'area viene
+calcolata come somma delle aree (in valore assoluto) dei due triangoli $ABC$ e $ACD$:
+\begin{equation}
+  \mathcal{A}(Q)=\tfrac12\Bigl(\bigl|(B-A)\times(C-A)\bigr|+\bigl|(C-A)\times(D-A)\bigr|\Bigr),
+\end{equation}
+dove $\times$ indica il prodotto vettoriale 2D, $(x_1,y_1)\times(x_2,y_2)=x_1y_2-y_1x_2$. A
+differenza della formula di Gauss (\emph{shoelace}), questa somma non si annulla quando il
+quadrilatero si incrocia ``a farfalla''. L'effetto si mostra solo se
+$\mathcal{A}(Q)>0{,}0015\,WH$, cioè se occupa più dello 0,15\% dello schermo.
+
+L'opacità $\alpha$ dell'effetto segue un'esponenziale con costante di tempo $\tau=90$\,ms, e
+il quadrilatero resta visibile per 160\,ms dopo l'ultima rilevazione valida:
+\begin{equation}
+  \alpha\leftarrow\alpha+(\alpha^\star-\alpha)\bigl(1-e^{-\Delta t/\tau}\bigr),\qquad
+  \alpha^\star\in\{0,1\}.
+\end{equation}
+In questo modo l'effetto entra ed esce in dissolvenza e non sfarfalla se la mano viene persa per
+un solo fotogramma.
+
+%=====================================================================
+\section{Stabilizzare gli angoli: il filtro One Euro}
+%=====================================================================
+
+I punti stimati da una rete tremano di qualche pixel da un fotogramma all'altro (\emph{jitter}).
+Un filtro passa-basso li calma, ma introduce ritardo (\emph{lag}): il rettangolo ``insegue'' le
+dita. Il filtro One Euro~\cite{casiez2012oneeuro} risolve il compromesso adattando la frequenza di
+taglio alla velocità del movimento. Per ognuna delle 8 coordinate (4 angoli $\times$ 2 assi):
+\begin{align}
+  \hat{x}_i &= a_i\,x_i+(1-a_i)\,\hat{x}_{i-1},\qquad
+  a_i=\frac{1}{1+\tau_i/\Delta t},\qquad \tau_i=\frac{1}{2\pi f_{c,i}},\\
+  f_{c,i} &= f_{\min}+\beta\,\bigl|\hat{\dot{x}}_i\bigr|,
+\end{align}
+dove $\hat{\dot{x}}_i$ è la velocità stimata (anch'essa filtrata, con taglio fisso a 1\,Hz).
+
+Quando la mano è ferma la velocità è quasi nulla, il taglio resta basso ($f_{\min}$) e il tremolio
+viene eliminato. Quando la mano si muove in fretta, $f_c$ sale e il filtro ``si apre'', azzerando
+il ritardo. Il cursore \emph{Stabilizzazione} $s\in\{0,\dots,10\}$ dell'app imposta
+\begin{equation}
+  f_{\min}=\frac{6}{1+0{,}9\,s}\ \text{Hz},\qquad \beta=0{,}004+0{,}0012\,(10-s)\ \text{px}^{-1}.
+\end{equation}
+Con $s=0$ il filtro è di fatto disattivato. Quando il quadrilatero ricompare dopo essere sparito,
+il filtro viene azzerato, così gli angoli non scivolano dalla posizione vecchia.
+
+%=====================================================================
+\section{Dal quadrilatero alla maschera: distanza con segno}
+\label{sec:sdf}
+%=====================================================================
+
+Lo shader deve decidere, per ciascuno dei milioni di pixel dello schermo, se il pixel sta dentro
+il quadrilatero e quanto è vicino al bordo. Lo fa con una \emph{funzione di distanza con segno}
+(SDF)~\cite{quilez}, negativa dentro e positiva fuori.
+
+\paragraph{Distanza dai lati.} Per un segmento $\overline{\vect{a}\vect{b}}$ si proietta il
+pixel $\vect{p}$ sulla retta e si limita la proiezione al segmento:
+\begin{equation}
+  h=\clamp\!\left(\frac{(\vect{p}-\vect{a})\cdot(\vect{b}-\vect{a})}{\|\vect{b}-\vect{a}\|^2},\,0,\,1\right),
+  \qquad d_{ab}(\vect{p})=\bigl\|\vect{p}-\vect{a}-h(\vect{b}-\vect{a})\bigr\|.
+\end{equation}
+La distanza dal quadrilatero è il minimo sui quattro lati: $d(\vect{p})=\min d_{ab}(\vect{p})$.
+
+\paragraph{Il segno: regola pari-dispari.} Si immagina un raggio orizzontale che parte da
+$\vect{p}$ e si contano i lati che attraversa. Un numero dispari di attraversamenti significa
+che il pixel è dentro. Il segno è quindi $\sigma=(-1)^{n}$ e $\mathrm{sd}(\vect{p})=-\sigma\,d(\vect{p})$.
+Questa regola funziona anche quando i lati si incrociano: un quadrilatero ``a farfalla''
+diventa semplicemente due triangoli pieni (figura~\ref{fig:quad}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[scale=0.95, lab/.style={font=\scriptsize}]
+  \fill[accent!35, even odd rule] (0,2) -- (3,2.2) -- (2.9,0.2) -- (0.1,0) -- cycle;
+  \draw[accent!70!black, thick] (0,2) -- (3,2.2) -- (2.9,0.2) -- (0.1,0) -- cycle;
+  \node[lab, above left] at (0,2) {$\vect{a}_8$};
+  \node[lab, above right] at (3,2.2) {$\vect{b}_8$};
+  \node[lab, below right] at (2.9,0.2) {$\vect{b}_4$};
+  \node[lab, below left] at (0.1,0) {$\vect{a}_4$};
+  \node[font=\small] at (1.5,-0.7) {mani ``a cornice''};
+  \begin{scope}[xshift=5.2cm]
+  \fill[accent!35, even odd rule] (0,2) -- (3,0.1) -- (3,2.1) -- (0,0) -- cycle;
+  \draw[accent!70!black, thick] (0,2) -- (3,0.1) -- (3,2.1) -- (0,0) -- cycle;
+  \node[lab, above left] at (0,2) {$\vect{a}_8$};
+  \node[lab, below right] at (3,0.1) {$\vect{b}_8$};
+  \node[lab, above right] at (3,2.1) {$\vect{b}_4$};
+  \node[lab, below left] at (0,0) {$\vect{a}_4$};
+  \node[font=\small] at (1.5,-0.7) {mani incrociate: ``farfalla''};
+  \end{scope}
+  \begin{scope}[xshift=10.4cm]
+  \draw[gray] (0,0) rectangle (3.2,2.4);
+  \fill[accent!35] (0.6,0.4) rectangle (2.5,1.8);
+  \draw[accent!70!black, thick] (0.6,0.4) rectangle (2.5,1.8);
+  \node[circle, fill=dot, inner sep=1.5pt, label={[lab]left:$\vect{p}_4$}] at (0.6,0.4) {};
+  \node[circle, fill=dot, inner sep=1.5pt, label={[lab]above right:$\vect{p}_8$}] at (2.5,1.8) {};
+  \node[font=\small] at (1.5,-0.7) {una mano};
+  \end{scope}
+\end{tikzpicture}
+\caption{Le tre forme possibili. Con la regola pari-dispari il caso incrociato non richiede
+nessun trattamento speciale.}
+\label{fig:quad}
+\end{figure}
+
+\paragraph{Bordi morbidi.} Con la funzione \emph{smoothstep}
+\begin{equation}
+  \Sm(e_0,e_1,x)=3t^2-2t^3,\qquad t=\clamp\!\left(\frac{x-e_0}{e_1-e_0},0,1\right),
+\end{equation}
+la maschera vale $m(\vect{p})=1-\Sm(-f,\,f,\,\mathrm{sd}(\vect{p}))$, dove $f$ è la sfumatura
+scelta dall'utente più 0,75\,px. Quei 0,75\,px fanno da \emph{anti-aliasing}: il bordo non è mai
+seghettato, nemmeno con sfumatura zero. Se il filtro va applicato ``fuori'' si usa $1-m$. Il
+colore finale è un'interpolazione lineare, cioè il caso più semplice del compositing
+alfa~\cite{porter1984compositing}:
+\begin{equation}
+  O(\vect{p})=\bigl(1-\alpha\,m(\vect{p})\bigr)\,I(\vect{p})+\alpha\,m(\vect{p})\,F[I](\vect{p}),
+\end{equation}
+dove $F[I]$ è l'immagine filtrata. Il bordo opzionale è una striscia dove
+$|\mathrm{sd}(\vect{p})|$ è minore di metà spessore.
+
+\paragraph{Perché sulla GPU.} Il calcolo di ogni pixel è indipendente dagli altri: è il caso
+ideale per un \emph{fragment shader}. Un iPad esegue queste operazioni su circa 2--4 milioni di
+pixel per fotogramma senza impegnare la CPU, che resta libera per le reti neurali.
+
+%=====================================================================
+\section{I filtri come operatori sull'immagine}
+%=====================================================================
+
+Ogni filtro è una funzione $F[I]$ calcolata nello shader. Alcuni sono puntuali (dipendono solo dal
+colore del pixel), altri usano un intorno del pixel (convoluzioni) o deformano le coordinate.
+
+\paragraph{Luminanza.} Molti filtri partono dalla luminanza, che pesa i canali in base alla
+sensibilità dell'occhio (raccomandazione ITU-R BT.601~\cite{bt601}):
+$Y=0{,}299\,R+0{,}587\,G+0{,}114\,B$.
+
+\paragraph{Gradiente di Sobel.} I contorni sono i punti in cui la luminanza cambia
+bruscamente. L'operatore di Sobel~\cite{sobel1968,gonzalez2018} stima le derivate con due
+convoluzioni $3\times3$:
+\begin{equation}
+  G_x=\begin{bmatrix}-1&0&1\\-2&0&2\\-1&0&1\end{bmatrix}*Y,\qquad
+  G_y=\begin{bmatrix}-1&-2&-1\\0&0&0\\1&2&1\end{bmatrix}*Y,\qquad
+  e=\sqrt{G_x^2+G_y^2},\quad \theta=\operatorname{atan2}(G_y,G_x).
+\end{equation}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}l>{\raggedright\arraybackslash}p{11.2cm}@{}}
+\toprule
+\textbf{Filtro} & \textbf{Che cosa calcola} \\
+\midrule
+Acido & Mappa luminanza e contorni su un arcobaleno che scorre nel tempo:
+  $h=\operatorname{frac}(2{,}6\,Y+1{,}4\,e+0{,}1\,n-0{,}12\,t)$, colore $=\mathrm{HSV}(h,\,0{,}85,\,v)$,
+  dove $n$ è un rumore pseudo-casuale (grana) e $t$ il tempo. È il look del reel. \\
+Bianco e nero & $Y'=\clamp(1{,}15\,(Y-0{,}5)+0{,}5)$: scala di grigi con un leggero aumento di contrasto. \\
+Invisibile & Al posto del video mostra lo sfondo catturato $B$ (vedi \S\ref{sec:sparire}). \\
+Termico & \emph{Falsi colori}: la luminanza (leggermente sfocata) indicizza una tavolozza lineare a
+  tratti nero $\to$ viola $\to$ rosso $\to$ arancio $\to$ bianco, come una termocamera. \\
+Negativo & $F[I]=1-I$. \\
+Pixel & Quantizza lo spazio: $\vect{q}=(\lfloor\vect{p}/b\rfloor+\tfrac12)\,b$ con blocchi di
+  $b=22$ px (riferiti a 720 p), e quantizza i colori a 6 livelli. È un sottocampionamento senza
+  filtro anti-alias: l'\emph{aliasing} diventa un effetto estetico. \\
+Neon & Contorni su nero, $\Sm(0{,}08,\,0{,}5,\,e)$, con tinta data dall'orientazione $\theta$
+  del gradiente: ogni direzione ha il suo colore. \\
+Glitch & Aberrazione cromatica: $R(u+\delta)$, $G(u)$, $B(u-\delta)$ con $\delta$ che oscilla, più
+  strappi orizzontali casuali a bande e linee di scansione. \\
+Fumetto & Posterizzazione a 4 livelli, saturazione aumentata, contorni neri da Sobel e un
+  \emph{retino} a punti il cui raggio cresce con $1-Y$ (stampa a mezzatinta). \\
+Sfocato & Media di 25 campioni disposti a spirale di Vogel (\S\ref{sec:blur}). \\
+Raggi X & Luminanza invertita con correzione gamma, tinta azzurra e contorni luminosi. \\
+Caleidoscopio & Coordinate polari attorno al centro del quadrilatero e ``ripiegamento''
+  dell'angolo: simmetria a 8 settori. \\
+\bottomrule
+\end{tabular}
+\caption{I 12 filtri e l'operazione di elaborazione d'immagine che li realizza.}
+\end{table}
+
+\subsection{Sfocatura con la spirale di Vogel}
+\label{sec:blur}
+Una sfocatura gaussiana esatta richiederebbe molti campioni. Lo shader usa invece $N=24$ campioni
+(più il centro) distribuiti in modo uniforme in un disco con la \emph{spirale di
+Vogel}~\cite{vogel1979}, la stessa disposizione dei semi del girasole:
+\begin{equation}
+  r_k=R\sqrt{k/N},\qquad \varphi_k=k\,\varphi_g,\qquad \varphi_g=\pi\bigl(3-\sqrt5\bigr)\approx2{,}39996,
+\end{equation}
+dove $\varphi_g$ è l'\emph{angolo aureo}. La radice quadrata rende uniforme la densità sull'area e
+l'angolo aureo evita che i campioni si allineino. Il risultato è simile a un \emph{bokeh} circolare
+di raggio $R$. La stessa funzione serve alla transizione della sparizione, con $R$ variabile.
+
+\subsection{Caleidoscopio}
+Con $\vect{c}$ il centro del quadrilatero, $\vect{d}=\vect{p}-\vect{c}$, $r=\|\vect{d}\|$ e
+$\phi=\operatorname{atan2}(d_y,d_x)+\omega t$, l'angolo viene ripiegato in un settore di ampiezza
+$\Delta=2\pi/8$:
+\begin{equation}
+  \phi'=\Bigl|\bigl(\phi\bmod\Delta\bigr)-\tfrac{\Delta}{2}\Bigr|,\qquad
+  \vect{p}'=\vect{c}+r\,(\cos\phi',\,\sin\phi').
+\end{equation}
+Campionare il video in $\vect{p}'$ produce un'immagine con la simmetria del gruppo diedrale: 8
+spicchi, ciascuno speculare al vicino.
+
+%=====================================================================
+\section{Riconoscere i gesti: pugno e V}
+\label{sec:gesti}
+%=====================================================================
+
+Per far sparire la persona l'app riconosce una \emph{sequenza} di due pose della stessa mano: un
+pugno e poi una V con indice e medio. La classificazione usa regole geometriche sui 21 punti, non
+una rete dedicata.
+
+\subsection{Le caratteristiche di ciascun dito}
+I punti vengono portati in uno spazio isotropo, $\vect{X}=(x\,w,\;y\,h,\;z\,w)$, in modo che le
+distanze abbiano la stessa unità su tutti gli assi. Per ogni dito (escluso il pollice), con
+$\vect{M}$ la nocca (MCP), $\vect{P}$ l'articolazione intermedia (PIP), $\vect{T}$ la punta e
+$\vect{W}$ il polso, si calcolano due misure:
+\begin{align}
+  \sigma &= \cos\angle(\vect{P}-\vect{M},\;\vect{T}-\vect{P})
+         =\frac{(\vect{P}-\vect{M})\cdot(\vect{T}-\vect{P})}{\|\vect{P}-\vect{M}\|\,\|\vect{T}-\vect{P}\|}
+         &&\text{(rettilineità)},\\
+  \rho &= \frac{\|\vect{T}-\vect{W}\|}{\|\vect{P}-\vect{W}\|} &&\text{(allungamento)}.
+\end{align}
+Un dito disteso ha $\sigma\approx1$ (le falangi sono allineate) e $\rho\approx1{,}3$ (la punta è
+più lontana dal polso della nocca intermedia). In un dito chiuso a pugno la punta torna verso il
+palmo: $\sigma<0$ e $\rho<1$. Entrambe le misure sono rapporti o angoli, quindi non cambiano con
+la distanza dalla fotocamera, con la posizione o con la rotazione della mano. Siccome usano anche
+$z$, funzionano pure quando le dita puntano verso l'obiettivo.
+
+\subsection{Le regole}
+\begin{align*}
+  \textsf{disteso}   &\iff \sigma>0{,}55\ \wedge\ \rho>1{,}08,\\
+  \textsf{piegato}   &\iff \sigma<0{,}25\ \vee\ \rho<0{,}92,\\
+  \textsf{pugno}     &\iff \text{indice, medio, anulare, mignolo tutti \textsf{piegati}},\\
+  \textsf{V}         &\iff \text{indice e medio \textsf{distesi}}\ \wedge\ \text{anulare e mignolo \textsf{piegati}}
+                        \ \wedge\ \frac{\|\vect{T}_8-\vect{T}_{12}\|}{\|\vect{X}_9-\vect{W}\|}>0{,}3.
+\end{align*}
+L'ultima condizione richiede che le due dita siano \emph{divaricate}: due dita unite non sono una
+V. Il pollice viene ignorato, perché in entrambe le pose può stare ovunque. Le regole sono
+volutamente asimmetriche: per ``disteso'' servono entrambe le condizioni, per ``piegato'' ne basta
+una. Così una V viene riconosciuta solo quando è netta, mentre un pugno un po' lasco conta lo
+stesso.
+
+\subsection{La sequenza nel tempo}
+Le pose stimate fotogramma per fotogramma sono rumorose, quindi l'app usa una piccola macchina a
+stati per ogni mano, identificata dalla sua lateralità:
+\begin{enumerate}
+  \item \textbf{Anti-rimbalzo} (\emph{debounce}): una posa diventa ``ufficiale'' solo se resta
+  uguale per almeno 70\,ms.
+  \item \textbf{Pugno valido}: il pugno deve durare almeno 220\,ms. Da quel momento, e per tutto
+  il tempo in cui resta chiuso, l'app aggiorna l'istante $t_{\text{pugno}}$. Sullo schermo
+  compare ``ora V''.
+  \item \textbf{V}: la V deve iniziare entro 1{,}6\,s dall'ultimo pugno valido e durare almeno
+  180\,ms. A quel punto scatta l'evento.
+  \item \textbf{Pausa} (\emph{cooldown}): per 1{,}2\,s non può scattare un altro evento.
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=4.2cm, y=1cm, font=\small]
+  \draw[-{Stealth}] (0,0) -- (3.05,0) node[right] {$t$ (s)};
+  \foreach \t in {0,0.5,1,1.5,2,2.5,3} \draw (\t,0.06) -- (\t,-0.06) node[below, font=\scriptsize] {\t};
+  \fill[gray!20]   (0,0.3) rectangle (0.3,0.9);  \node at (0.15,0.6) {\scriptsize altro};
+  \fill[orange!45] (0.3,0.3) rectangle (1.2,0.9); \node at (0.75,0.6) {pugno};
+  \fill[gray!20]   (1.2,0.3) rectangle (1.5,0.9); \node at (1.35,0.6) {\scriptsize altro};
+  \fill[accent!45] (1.5,0.3) rectangle (2.4,0.9); \node at (1.95,0.6) {V};
+  \fill[gray!20]   (2.4,0.3) rectangle (3,0.9);  \node at (2.7,0.6) {\scriptsize altro};
+  \draw[decorate, decoration={brace, amplitude=4pt}] (0.3,1.0) -- node[above=4pt, font=\scriptsize] {220 ms} (0.52,1.0);
+  \draw[dashed] (0.52,0.3) -- (0.52,1.0);
+  \draw[decorate, decoration={brace, amplitude=4pt}] (1.5,1.0) -- node[above=4pt, xshift=-7pt, font=\scriptsize] {180 ms} (1.68,1.0);
+  \draw[decorate, decoration={brace, mirror, amplitude=4pt}] (1.2,-0.55) -- node[below=4pt, font=\scriptsize] {la V deve iniziare entro 1,6 s dall'ultimo pugno valido} (2.8,-0.55);
+  \node[star, star points=5, fill=hand, inner sep=2.2pt] (ev) at (1.68,1.55) {};
+  \node[right=2pt of ev, font=\scriptsize] {evento: sparisci / riappari};
+  \draw[hand, thick] (1.68,0.3) -- (1.68,1.45);
+\end{tikzpicture}
+\caption{Diagramma temporale della sequenza pugno $\to$ V.}
+\end{figure}
+
+Chiedere due pose diverse \emph{in quest'ordine} riduce molto i falsi positivi. Una V da sola,
+gesto frequente in foto e video, non fa scattare niente. Ogni evento \emph{inverte} lo stato:
+il primo fa sparire, il secondo fa riapparire.
+
+%=====================================================================
+\section{Sparire: segmentazione, sottrazione dello sfondo e compositing}
+\label{sec:sparire}
+%=====================================================================
+
+Per ``togliere'' una persona serve sapere due cose: \emph{quali} pixel le appartengono e
+\emph{che cosa} c'era dietro.
+
+\subsection{Che cosa c'era dietro: la lastra di sfondo}
+L'app cattura una \emph{lastra pulita} (\emph{clean plate}) $B$, cioè un fotogramma della scena
+vuota, durante un conto alla rovescia in cui l'utente esce dall'inquadratura. L'ipotesi è che la
+fotocamera resti ferma e la luce costante: in quel caso, in ogni pixel non coperto dalla persona,
+vale $I_t(\vect{p})\approx B(\vect{p})$.
+
+\subsection{Quali pixel sono tuoi: due indizi complementari}
+
+\paragraph{1. Segmentazione semantica.} Il \emph{Selfie Segmenter} di MediaPipe è una piccola rete
+convoluzionale \emph{encoder--decoder} derivata da MobileNetV3~\cite{howard2019mobilenetv3}.
+Riceve l'immagine ridotta a 256$\times$256 e restituisce per ogni pixel la probabilità
+$S(\vect{p})\in[0,1]$ che appartenga a una persona. La maschera viene poi riportata alla
+risoluzione del fotogramma. È una stima ``semantica'': riconosce una persona anche se ha i
+vestiti dello stesso colore del muro, ma tende a sbagliare sui contorni (capelli, dita) e ignora
+le ombre e gli oggetti che la persona tiene in mano.
+
+\paragraph{2. Sottrazione dello sfondo.} Il secondo indizio è il più classico della
+videosorveglianza~\cite{piccardi2004background}: ciò che è diverso dalla lastra vuota è primo
+piano. Per ridurre il rumore del sensore si confrontano medie locali su 5 pixel a croce:
+\begin{equation}
+  D(\vect{p})=\bigl\|\bar I(\vect{p})-\bar B(\vect{p})\bigr\|,\qquad
+  M_d(\vect{p})=\Sm(0{,}09,\,0{,}2,\,D(\vect{p})).
+\end{equation}
+Questo indizio coglie ombre, oggetti tenuti in mano e i pezzi che la rete non vede. Fallisce però
+dove la persona ha lo stesso colore dello sfondo (\emph{camouflage}). I punti deboli dei due
+metodi sono diversi, quindi conviene combinarli.
+
+\subsection{Costi asimmetrici: meglio coprire troppo}
+L'osservazione chiave è che i due errori possibili non costano uguale:
+\begin{itemize}
+  \item \textbf{falso negativo} (un pixel della persona non viene sostituito): resta un ``fantasma''
+  ben visibile;
+  \item \textbf{falso positivo} (un pixel dello sfondo viene sostituito): non si vede, perché lì
+  $I\approx B$ e si sostituisce lo sfondo con se stesso.
+\end{itemize}
+Per questo tutte le scelte spingono la maschera ad \emph{allargarsi}:
+\begin{align}
+  S_d(\vect{p}) &= \max_{\vect{q}\in\mathcal{N}(\vect{p})} S(\vect{q})
+     &&\text{dilatazione morfologica~\cite{serra1982} su 9 campioni, raggio 14 px},\\
+  M_s(\vect{p}) &= \Sm(0{,}05,\,0{,}3,\,S_d(\vect{p}))
+     &&\text{soglia bassa e morbida},\\
+  M(\vect{p}) &= \max\bigl(M_s(\vect{p}),\,M_d(\vect{p})\bigr)
+     &&\text{unione (``OR'' sfumato) dei due indizi}.
+\end{align}
+Anche nel tempo vale lo stesso principio. La maschera della rete viene tenuta con un
+\emph{peak hold} che decade lentamente,
+\begin{equation}
+  S_t(\vect{p})=\max\bigl(\hat S_t(\vect{p}),\;0{,}8\,S_{t-1}(\vect{p})\bigr),
+\end{equation}
+così un pixel appena lasciato dalla persona resta coperto per qualche fotogramma e i bordi non
+sfarfallano.
+
+\subsection{La transizione: sfocatura e dissolvenza}
+Un parametro $t\in[0,1]$ va da 0 a 1 in 0{,}6\,s (o al contrario per riapparire). Il colore
+``fantasma'' $G$ e l'uscita $O$ sono
+\begin{align}
+  r(t) &= 26\,\Sm(0,\,0{,}55,\,t)\ \text{px}, \qquad w(t)=\Sm(0{,}3,\,1,\,t),\\
+  G(\vect{p}) &= \bigl(1-w(t)\bigr)\,\mathrm{Blur}_{r(t)}[I](\vect{p})+w(t)\,B(\vect{p}),\\
+  O(\vect{p}) &= \bigl(1-M(\vect{p})\bigr)\,I(\vect{p})+M(\vect{p})\,G(\vect{p}).
+\end{align}
+Nella prima metà la persona si sfoca rapidamente ($r$ raggiunge quasi il massimo a metà
+transizione), poi si dissolve nello sfondo ($w$ cresce da 0,3 in poi). A $t=1$ resta solo $B$
+dentro la maschera, mentre fuori la scena è ancora dal vivo.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=7cm, y=3.2cm,
+  declare function={sst(\a,\b,\x)=3*(min(max((\x-\a)/(\b-\a),0),1))^2-2*(min(max((\x-\a)/(\b-\a),0),1))^3;}]
+  \draw[-{Stealth}] (0,0) -- (1.08,0) node[right] {$t$};
+  \draw[-{Stealth}] (0,0) -- (0,1.22);
+  \foreach \t in {0,0.25,0.5,0.75,1} \draw (\t,0.03) -- (\t,-0.03) node[below, font=\scriptsize] {\t};
+  \draw (0.015,1) -- (-0.015,1) node[left, font=\scriptsize] {1};
+  \draw[very thick, blue!70!black, domain=0:1, samples=80] plot (\x, {sst(0,0.55,\x)});
+  \draw[very thick, accent, domain=0:1, samples=80] plot (\x, {sst(0.3,1,\x)});
+  \node[blue!70!black, font=\small, anchor=west] at (0.6,1.1) {$r(t)/26$: sfocatura};
+  \node[accent!80!black, font=\small, anchor=west] at (0.62,0.35) {$w(t)$: dissolvenza};
+\end{tikzpicture}
+\caption{Le due curve della transizione.}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}cccl@{}}
+\toprule
+$t$ & $r(t)$ & $w(t)$ & dentro la maschera si vede\\
+\midrule
+0    & 0 px    & 0    & la persona nitida\\
+0,25 & 11,2 px & 0    & la persona già sfocata\\
+0,5  & 25,4 px & 0,20 & una sagoma molto sfocata che inizia a svanire\\
+0,75 & 26 px   & 0,71 & un fantasma trasparente\\
+1    & ---     & 1    & solo lo sfondo $B$\\
+\bottomrule
+\end{tabular}
+\caption{Valori della transizione nei suoi punti chiave.}
+\end{table}
+
+Il cuore dello shader è breve:
+\begin{lstlisting}
+float m = personMask(uv);                  // M: segmentation OR difference
+vec3 bg = texture2D(uBg, uv).rgb;          // B: clean plate
+float radius = 26.0 * smoothstep(0.0, 0.55, t);
+vec3 ghost = mix(blurAt(uv, radius), bg, smoothstep(0.3, 1.0, t));
+col = mix(live, ghost, m);                 // O = (1-M) I + M G
+\end{lstlisting}
+
+\subsection{Limiti}
+\begin{itemize}
+  \item \textbf{Fotocamera mobile}: se l'inquadratura si sposta, $B$ non è più allineata. Servirebbe
+  registrare i fotogrammi, ad esempio stimando un'omografia con punti caratteristici, oppure
+  ricostruire lo sfondo nel tempo.
+  \item \textbf{Luce ed esposizione automatica}: se la luminosità cambia, $D$ cresce ovunque. La
+  maschera si allarga (senza conseguenze visibili) ma lo sfondo mostrato ha la luce ``vecchia''.
+  \item \textbf{Zone mai viste}: la lastra contiene solo ciò che era visibile quando la scena era
+  vuota. Per questo va catturata uscendo davvero dall'inquadratura.
+  \item \textbf{Altre persone o oggetti in movimento} vengono trattati come primo piano dalla
+  sottrazione dello sfondo e quindi nascosti anch'essi.
+\end{itemize}
+
+%=====================================================================
+\section{Tempo reale e privacy}
+%=====================================================================
+
+A 30 fotogrammi al secondo ogni fotogramma ha un budget di circa 33\,ms. Per rispettarlo l'app:
+\begin{itemize}
+  \item analizza solo i fotogrammi nuovi e sfrutta il tracciamento di MediaPipe, che evita di
+  rieseguire il rilevatore di palmi;
+  \item esegue la segmentazione solo mentre la sparizione è attiva o in transizione;
+  \item affida alla GPU tutto il lavoro per pixel. Il costo dipende soprattutto dal numero di
+  letture di texture per pixel: 25 per la sfocatura, 8 per Sobel, una ventina per la maschera
+  della persona;
+  \item permette di ridurre la risoluzione di rendering dalle impostazioni sui dispositivi meno
+  potenti.
+\end{itemize}
+Nessuna immagine lascia il dispositivo: modelli e librerie vengono scaricati una volta, poi
+l'inferenza e il compositing avvengono interamente nel browser.
+
+%=====================================================================
+\begin{thebibliography}{99}
+%=====================================================================
+
+\bibitem{zhang2020hands}
+F.~Zhang, V.~Bazarevsky, A.~Vakunov, A.~Tkachenka, G.~Sung, C.-L.~Chang, M.~Grundmann.
+\newblock \emph{MediaPipe Hands: On-device Real-time Hand Tracking}.
+\newblock arXiv:2006.10214, 2020.
+
+\bibitem{lugaresi2019mediapipe}
+C.~Lugaresi et al.
+\newblock \emph{MediaPipe: A Framework for Building Perception Pipelines}.
+\newblock arXiv:1906.08172, 2019.
+
+\bibitem{bazarevsky2019blazeface}
+V.~Bazarevsky, Y.~Kartynnik, A.~Vakunov, K.~Raveendran, M.~Grundmann.
+\newblock \emph{BlazeFace: Sub-millisecond Neural Face Detection on Mobile GPUs}.
+\newblock arXiv:1907.05047, 2019.
+
+\bibitem{liu2016ssd}
+W.~Liu, D.~Anguelov, D.~Erhan, C.~Szegedy, S.~Reed, C.-Y.~Fu, A.~C.~Berg.
+\newblock \emph{SSD: Single Shot MultiBox Detector}.
+\newblock ECCV, 2016.
+
+\bibitem{lin2017focal}
+T.-Y.~Lin, P.~Goyal, R.~Girshick, K.~He, P.~Doll\'ar.
+\newblock \emph{Focal Loss for Dense Object Detection}.
+\newblock ICCV, 2017.
+
+\bibitem{howard2019mobilenetv3}
+A.~Howard et al.
+\newblock \emph{Searching for MobileNetV3}.
+\newblock ICCV, 2019.
+
+\bibitem{casiez2012oneeuro}
+G.~Casiez, N.~Roussel, D.~Vogel.
+\newblock \emph{1\,\texteuro{} Filter: A Simple Speed-based Low-pass Filter for Noisy Input in Interactive Systems}.
+\newblock CHI, 2012.
+
+\bibitem{quilez}
+I.~Quilez.
+\newblock \emph{2D distance functions}.
+\newblock \url{https://iquilezles.org/articles/distfunctions2d/}.
+
+\bibitem{porter1984compositing}
+T.~Porter, T.~Duff.
+\newblock \emph{Compositing Digital Images}.
+\newblock SIGGRAPH, 1984.
+
+\bibitem{bt601}
+ITU-R.
+\newblock \emph{Recommendation BT.601: Studio encoding parameters of digital television}.
+
+\bibitem{sobel1968}
+I.~Sobel, G.~Feldman.
+\newblock \emph{A 3$\times$3 Isotropic Gradient Operator for Image Processing}.
+\newblock Stanford Artificial Intelligence Project, 1968.
+
+\bibitem{gonzalez2018}
+R.~C.~Gonzalez, R.~E.~Woods.
+\newblock \emph{Digital Image Processing}, 4\textsuperscript{a} ed.
+\newblock Pearson, 2018.
+
+\bibitem{vogel1979}
+H.~Vogel.
+\newblock \emph{A better way to construct the sunflower head}.
+\newblock Mathematical Biosciences, 44(3--4), 1979.
+
+\bibitem{piccardi2004background}
+M.~Piccardi.
+\newblock \emph{Background subtraction techniques: a review}.
+\newblock IEEE International Conference on Systems, Man and Cybernetics, 2004.
+
+\bibitem{serra1982}
+J.~Serra.
+\newblock \emph{Image Analysis and Mathematical Morphology}.
+\newblock Academic Press, 1982.
+
+\end{thebibliography}
+
+\end{document}
