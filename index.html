@@ -33,6 +33,9 @@
     <button class="icon-btn" id="btn-bg" title="Cattura sfondo (B)" aria-label="Cattura sfondo">
       <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg>
     </button>
+    <button class="icon-btn" id="btn-vanish" title="Sparisci / riappari (V) · gesto ✊ → ✌️" aria-label="Sparisci o riappari">
+      <svg viewBox="0 0 24 24"><path d="M5 21V11a7 7 0 0 1 14 0v10l-2.5-2-2.3 2-2.2-2-2.2 2-2.3-2z"/><circle cx="9.5" cy="11" r="1" class="fill"/><circle cx="14.5" cy="11" r="1" class="fill"/></svg>
+    </button>
     <button class="icon-btn" id="btn-switch" title="Cambia fotocamera (C)" aria-label="Cambia fotocamera" hidden>
       <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><path d="M9 13a3 3 0 0 1 5.2-2M15 13a3 3 0 0 1-5.2 2"/><path d="M14.5 9.5v1.7h-1.7M9.5 16.5v-1.7h1.7"/></svg>
     </button>
@@ -62,6 +65,9 @@
     </div>
     <div id="filters" role="radiogroup" aria-label="Filtri"></div>
   </div>
+
+  <!-- Gesture feedback -->
+  <div id="gesture-hud" class="pill" hidden></div>
 
   <!-- Recording timer -->
   <div id="rec-timer" class="pill" hidden><span class="dot rec-dot"></span><span id="rec-time">00:00</span></div>
@@ -93,6 +99,7 @@
         <li><b>Due mani</b>: gli indici sono gli angoli in alto, i pollici quelli in basso.</li>
         <li><b>Una mano</b>: pollice e indice sono due angoli opposti del rettangolo.</li>
         <li><b>Invisibile</b>: cattura lo sfondo vuoto, poi il rettangolo ti fa sparire.</li>
+        <li><b>Sparisci del tutto</b>: chiudi la mano a pugno ✊, poi fai la V ✌️. Rifallo per riapparire.</li>
       </ul>
       <label class="field">
         <span>Fotocamera</span>
@@ -130,6 +137,7 @@
         <option value="1">Fuori dal rettangolo</option>
       </select>
     </label>
+    <label class="switch"><input type="checkbox" id="opt-gesture" checked /><span>Gesto ✊ → ✌️ per sparire / riapparire</span></label>
     <label class="switch"><input type="checkbox" id="opt-skeleton" checked /><span>Mostra le mani (punti e linee)</span></label>
     <label class="switch"><input type="checkbox" id="opt-outline" /><span>Bordo del rettangolo</span></label>
     <label class="switch"><input type="checkbox" id="opt-mirror" checked /><span>Effetto specchio</span></label>
@@ -169,7 +177,7 @@
     <div class="row">
       <button id="btn-bg-clear" class="secondary">Elimina sfondo catturato</button>
     </div>
-    <p class="fine">Scorciatoie da tastiera: 1–9 e 0 filtri · B sfondo · I dentro/fuori · P foto · R video · C fotocamera · H nascondi · F schermo intero</p>
+    <p class="fine">Scorciatoie da tastiera: 1–9 e 0 filtri · V sparisci · B sfondo · I dentro/fuori · P foto · R video · C fotocamera · H nascondi · F schermo intero</p>
   </aside>
 
   <!-- Media preview -->

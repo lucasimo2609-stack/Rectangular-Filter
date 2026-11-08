@@ -24,6 +24,7 @@ export class HandTracker {
     this.lib = null;
     this.model = null;
     this.lastTs = -1;
+    this.labels = [];
   }
 
   /**
@@ -77,6 +78,8 @@ export class HandTracker {
     this.lastTs = ts;
     try {
       const res = this.landmarker.detectForVideo(video, ts);
+      const hd = res.handedness || res.handednesses || [];
+      this.labels = hd.map((c) => (c && c[0] ? c[0].categoryName : ''));
       return res.landmarks || [];
     } catch (err) {
       if (this.delegate === 'GPU' && !this._fallingBack) {

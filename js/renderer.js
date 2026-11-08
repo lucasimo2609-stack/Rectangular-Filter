@@ -26,6 +26,9 @@ uniform float uInvert;   // 1.0 = apply outside the polygon
 uniform float uOutline;  // outline width in px, 0 = none
 uniform float uFeather;  // edge softness in px
 uniform float uHasBg;
+uniform sampler2D uMask; // person segmentation (r: 0 = background, 1 = person)
+uniform float uHasMask;
+uniform float uVanish;   // 0 = you are visible, 1 = only the background is left
 
 vec2 toUV(vec2 p) {
   vec2 uv = (p - uMap.xy) / uMap.zw;
@@ -34,6 +37,34 @@ vec2 toUV(vec2 p) {
 }
 
 ${FILTER_GLSL}
+
+vec3 bgAt(vec2 uv) { return texture2D(uBg, clamp(uv, 0.0, 1.0)).rgb; }
+
+// How much a pixel belongs to you: the (dilated) segmentation mask, joined with
+// the difference from the background plate (catches shadows, held objects and
+// whatever the segmentation misses). Over-covering is harmless because those
+// pixels get replaced by the real background anyway.
+float personMask(vec2 uv) {
+  float m = 0.0;
+  if (uHasMask > 0.5) {
+    vec2 r = uTexel * 14.0;
+    m = texture2D(uMask, uv).r;
+    m = max(m, texture2D(uMask, uv + vec2( r.x, 0.0)).r);
+    m = max(m, texture2D(uMask, uv + vec2(-r.x, 0.0)).r);
+    m = max(m, texture2D(uMask, uv + vec2(0.0,  r.y)).r);
+    m = max(m, texture2D(uMask, uv + vec2(0.0, -r.y)).r);
+    m = max(m, texture2D(uMask, uv + r * 0.7).r);
+    m = max(m, texture2D(uMask, uv - r * 0.7).r);
+    m = max(m, texture2D(uMask, uv + vec2(r.x, -r.y) * 0.7).r);
+    m = max(m, texture2D(uMask, uv + vec2(-r.x, r.y) * 0.7).r);
+    m = smoothstep(0.05, 0.3, m);
+  }
+  vec2 t = uTexel * 2.0;
+  vec3 a = vid(uv) + vid(uv + vec2(t.x, 0.0)) + vid(uv - vec2(t.x, 0.0)) + vid(uv + vec2(0.0, t.y)) + vid(uv - vec2(0.0, t.y));
+  vec3 b = bgAt(uv) + bgAt(uv + vec2(t.x, 0.0)) + bgAt(uv - vec2(t.x, 0.0)) + bgAt(uv + vec2(0.0, t.y)) + bgAt(uv - vec2(0.0, t.y));
+  float d = length(a - b) / 5.0;
+  return max(m, smoothstep(0.09, 0.2, d));
+}
 
 // One edge of Inigo Quilez's polygon SDF (even-odd rule, so self-crossing "bow ties" work too).
 void polyEdge(vec2 p, vec2 vi, vec2 vj, inout float d, inout float s) {
@@ -61,6 +92,20 @@ void main() {
   vec2 uv = toUV(p);
   vec3 c = vid(uv);
   vec3 col = c;
+
+  // "Vanish": you dissolve through a quick blur and only the background is left.
+  if (uVanish > 0.001 && uHasBg > 0.5) {
+    float m = personMask(uv);
+    if (m > 0.001) {
+      vec3 bg = bgAt(uv);
+      vec3 ghost = bg;
+      if (uVanish < 0.999) {
+        float radius = 26.0 * smoothstep(0.0, 0.55, uVanish);
+        ghost = mix(blurAt(uv, radius), bg, smoothstep(0.3, 1.0, uVanish));
+      }
+      col = mix(c, ghost, m);
+    }
+  }
 
   if (uAlpha > 0.001) {
     float sd = sdQuad(p);
@@ -109,7 +154,7 @@ export class Renderer {
     this.bgSize = null; // [w, h] of the captured background, null if none
     this.lost = false;
     canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this.lost = true; });
-    canvas.addEventListener('webglcontextrestored', () => { this.lost = false; this.bgSize = null; this._init(); });
+    canvas.addEventListener('webglcontextrestored', () => { this.lost = false; this.bgSize = null; this.hasMask = false; this._init(); });
     this._init();
   }
 
@@ -144,10 +189,14 @@ export class Renderer {
     }
 
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     this.texVideo = makeTexture(gl);
     this.texBg = makeTexture(gl);
+    this.texMask = makeTexture(gl);
+    this.hasMask = false;
     gl.uniform1i(this.u.uVideo, 0);
     gl.uniform1i(this.u.uBg, 1);
+    gl.uniform1i(this.u.uMask, 2);
   }
 
   resize(w, h) {
@@ -170,6 +219,18 @@ export class Renderer {
 
   clearBackground() { this.bgSize = null; }
 
+  /** Uploads a person mask (Uint8, 1 byte per pixel, same framing as the video). */
+  updateMask(mask) {
+    if (this.lost) return;
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.texMask);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, mask.width, mask.height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, mask.data);
+    this.hasMask = true;
+  }
+
+  clearMask() { this.hasMask = false; }
+
   hasBackgroundFor(video) {
     return !!this.bgSize && this.bgSize[0] === video.videoWidth && this.bgSize[1] === video.videoHeight;
   }
@@ -185,6 +246,8 @@ export class Renderer {
     if (s.uploadVideo) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, s.video);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.texBg);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.texMask);
 
     const [A, B, C, D] = s.corners;
     gl.uniform2f(u.uRes, this.canvas.width, this.canvas.height);
@@ -203,6 +266,8 @@ export class Renderer {
     gl.uniform1f(u.uOutline, s.outline);
     gl.uniform1f(u.uFeather, s.feather);
     gl.uniform1f(u.uHasBg, this.hasBackgroundFor(s.video) ? 1 : 0);
+    gl.uniform1f(u.uHasMask, this.hasMask ? 1 : 0);
+    gl.uniform1f(u.uVanish, s.vanish || 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

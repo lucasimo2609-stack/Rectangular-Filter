@@ -1,10 +1,11 @@
 # Rectangular Filter
 
-Web app per **PC e iPad** che usa la webcam o la fotocamera, riconosce le mani e crea un **rettangolo dinamico** con le punte di **pollici e indici**. Dentro il rettangolo viene applicato il filtro che scegli, come nei reel fatti con TouchDesigner.
+Web app per **PC, iPad e smartphone** che usa la webcam o la fotocamera, riconosce le mani e crea un **rettangolo dinamico** con le punte di **pollici e indici**. Dentro il rettangolo viene applicato il filtro che scegli, come nei reel fatti con TouchDesigner.
 
 - Gira tutta nel browser: niente da installare e nessuna immagine inviata a server.
 - Riconoscimento mani con [MediaPipe Hand Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/hand_landmarker) (fino a 2 mani, 21 punti ciascuna).
 - Filtri in WebGL in tempo reale, ritagliati sul quadrilatero formato dalle dita.
+- **Gesto ✊ → ✌️**: chiudi la mano a pugno, poi fai la V con indice e medio. La tua persona si sfoca e sparisce e resta solo lo sfondo. Rifai il gesto per riapparire.
 
 ## Come si usa
 
@@ -17,6 +18,18 @@ Web app per **PC e iPad** che usa la webcam o la fotocamera, riconosce le mani e
 4. Con il pulsante bianco scatti una **foto**, con quello rosso registri un **video**. Su iPad, *Salva / Condividi* ti permette di salvarli nel Rullino.
 
 > Senza mani puoi anche **trascinare col dito o col mouse** per disegnare un rettangolo, utile per provare i filtri. Un tocco senza trascinare lo cancella.
+
+### Sparire con un gesto: pugno ✊ poi V ✌️
+
+1. Metti il dispositivo **fermo** (su un supporto o un treppiede).
+2. Chiudi una mano a **pugno** ✊ per un attimo. In alto compare *"✊ ok · ora ✌️ per sparire"*.
+3. Entro un secondo e mezzo apri **indice e medio a V** ✌️. Con una sfocatura veloce (circa mezzo secondo) la tua persona sparisce e resta **solo lo sfondo**, su tutta l'immagine e non dentro il rettangolo.
+4. Per **riapparire** rifai lo stesso gesto: ✊ e poi ✌️.
+
+- La prima volta l'app non conosce ancora lo sfondo vuoto. Al primo gesto parte da sola un conto alla rovescia: **esci dall'inquadratura**, lo sfondo viene catturato e quando rientri sei già invisibile.
+- Mentre sei invisibile il rettangolo e i punti delle mani vengono disattivati, così non ti tradiscono.
+- La scena resta **dal vivo**: l'app riconosce la tua sagoma (segmentazione MediaPipe), confronta l'immagine con lo sfondo salvato e sostituisce solo i pixel che appartengono a te, comprese ombre e oggetti che tieni in mano.
+- Puoi attivarlo anche con il pulsante a forma di **fantasmino** in alto o con il tasto `V`. Il gesto si spegne da *Impostazioni › Gesto ✊ → ✌️*.
 
 ### Effetto "Invisibile" (sparire dentro il rettangolo)
 
@@ -46,6 +59,7 @@ Consigli: luce costante, niente oggetti che si muovono sullo sfondo, fotocamera 
 ### Impostazioni (icona con i cursori)
 
 - **Forma**: automatica (1 o 2 mani), solo due mani, oppure una mano.
+- **Gesto ✊ → ✌️** per sparire e riapparire (attivo o disattivo).
 - **Applica il filtro**: dentro o **fuori** dal rettangolo (anche con il pulsante a sinistra dello scatto).
 - Mostra/nascondi i punti delle mani, bordo del rettangolo, effetto specchio.
 - **Stabilizzazione**: riduce il tremolio degli angoli (One Euro filter).
@@ -54,7 +68,7 @@ Consigli: luce costante, niente oggetti che si muovono sullo sfondo, fotocamera 
 
 ### Scorciatoie da tastiera (PC)
 
-`1`–`9`, `0` filtri · `←` `→` filtro precedente/successivo · `B` cattura sfondo · `I` dentro/fuori · `P` o `Spazio` foto · `R` video · `C` cambia fotocamera · `S` impostazioni · `H` nascondi interfaccia · `F` schermo intero · `Esc` chiudi
+`1`–`9`, `0` filtri · `←` `→` filtro precedente/successivo · `V` sparisci/riappari · `B` cattura sfondo · `I` dentro/fuori · `P` o `Spazio` foto · `R` video · `C` cambia fotocamera · `S` impostazioni · `H` nascondi interfaccia · `F` schermo intero · `Esc` chiudi
 
 ## Avvio
 
@@ -72,7 +86,7 @@ npx serve .
 
 Poi apri <http://localhost:8000> in Chrome, Edge, Safari o Firefox.
 
-### Su iPad (o iPhone)
+### Su iPad o smartphone (iPhone, Android)
 
 Serve un indirizzo **https://**. Il modo più semplice è **GitHub Pages**, già configurato in questo repository:
 
@@ -83,14 +97,15 @@ Serve un indirizzo **https://**. Il modo più semplice è **GitHub Pages**, già
 
 > Con un account GitHub gratuito, GitHub Pages funziona solo se il repository è **pubblico**. In alternativa puoi trascinare la cartella su [Netlify Drop](https://app.netlify.com/drop), oppure usare Vercel o Cloudflare Pages: tutti offrono HTTPS gratis.
 
-Requisiti: iPadOS 16.4 o successivo (Safari), oppure un browser recente su PC. Al **primo avvio** serve internet per scaricare il modello delle mani (~8 MB) e la libreria MediaPipe. Dopo, il browser li tiene in cache.
+Requisiti: iPadOS/iOS 16.4 o successivo (Safari), Chrome su Android, oppure un browser recente su PC. Al **primo avvio** serve internet per scaricare i modelli (mani ~8 MB, sagoma ~250 KB) e la libreria MediaPipe. Dopo, il browser li tiene in cache.
 
 ## Risoluzione problemi
 
 - **"Permesso fotocamera negato"**: su iPad vai in *Impostazioni › Safari › Fotocamera* e scegli *Chiedi* o *Consenti*. Su PC usa l'icona del lucchetto nella barra degli indirizzi.
 - **Le mani non vengono riconosciute**: serve più luce e le mani devono essere ben visibili, non troppo vicine al bordo. Prova *Impostazioni › Motore: CPU*, oppure apri l'app con `?cpu` in fondo all'indirizzo.
 - **Va a scatti**: imposta *Qualità di rendering: Bassa* e chiudi le altre app o schede che usano la fotocamera.
-- **"Invisibile" lascia aloni**: ricattura lo sfondo con la stessa luce e la fotocamera ferma. L'esposizione automatica della fotocamera può cambiare un po' i colori.
+- **"Invisibile" o la sparizione lasciano aloni**: ricattura lo sfondo con la stessa luce e la fotocamera ferma. L'esposizione automatica della fotocamera può cambiare un po' i colori.
+- **Il gesto ✊ → ✌️ non scatta**: tieni la mano rivolta verso la fotocamera, fai un pugno ben chiuso e una V con le dita ben aperte. Fai la V entro circa 1,5 secondi dal pugno.
 
 ## Struttura del progetto
 
@@ -99,7 +114,9 @@ index.html              interfaccia
 css/style.css           stile
 js/main.js              avvio, fotocamera, geometria del rettangolo, UI
 js/tracker.js           MediaPipe Hand Landmarker (GPU/CPU)
-js/renderer.js          WebGL: video + maschera del quadrilatero (SDF) + filtro
+js/gestures.js          riconoscimento pose (pugno, V) e sequenza ✊ → ✌️
+js/segmenter.js         segmentazione della persona per la sparizione
+js/renderer.js          WebGL: video, sparizione, maschera del quadrilatero (SDF), filtro
 js/filters.js           elenco filtri e codice GLSL di ciascuno
 js/smoothing.js         One Euro filter per stabilizzare gli angoli
 js/capture.js           foto e registrazione video (MediaRecorder)

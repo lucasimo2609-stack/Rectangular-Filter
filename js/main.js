@@ -3,6 +3,8 @@ import { Renderer } from './renderer.js';
 import { HandTracker, HAND_CONNECTIONS, THUMB_TIP, INDEX_TIP } from './tracker.js';
 import { PointSmoother } from './smoothing.js';
 import { Capture, stamp } from './capture.js';
+import { GestureSequence } from './gestures.js';
+import { PersonSegmenter } from './segmenter.js';
 
 const $ = (id) => document.getElementById(id);
 const video = $('video');
@@ -17,6 +19,7 @@ const STORE_KEY = 'rectfilter.settings.v1';
 const DEFAULTS = {
   filter: 0, shape: 'auto', invert: false, skeleton: true, outline: false,
   smooth: 5, feather: 2, timer: 5, quality: 0.75, camera: 'user', engine: 'auto',
+  gesture: true,
 };
 const settings = { ...DEFAULTS, ...loadSettings(), mirror: true };
 
@@ -44,6 +47,9 @@ const tracker = new HandTracker();
 const smoother = new PointSmoother(4);
 smoother.configure(settings.smooth);
 const capture = new Capture(glCanvas, overlay);
+const gestures = new GestureSequence();
+const segmenter = new PersonSegmenter();
+const VANISH_SECONDS = 0.6; // duration of the blur-dissolve
 
 const state = {
   running: false,
@@ -69,6 +75,10 @@ const state = {
   trackerStatus: 'loading',
   everSawHands: false,
   hintTimer: null,
+  poses: [],          // pose of each detected hand ('fist' | 'v' | 'other')
+  gestureArmed: false,
+  vanish: { target: 0, t: 0 },
+  vanishPending: false, // vanish requested before a background was captured
 };
 
 // ---------------------------------------------------------------------------
@@ -233,6 +243,10 @@ async function switchCamera() {
 function finishSwitch() {
   renderer.clearBackground();
   refreshBgButton();
+  state.vanish.target = 0;
+  state.vanish.t = 0;
+  $('btn-vanish').classList.remove('active');
+  refreshGestureHud();
   smoother.reset();
   state.corners = null;
   state.alpha = 0;
@@ -241,10 +255,15 @@ function finishSwitch() {
 // ---------------------------------------------------------------------------
 // Background capture (for the "Invisibile" filter)
 // ---------------------------------------------------------------------------
-function startBackgroundCapture() {
+function startBackgroundCapture(minSeconds = 0) {
   if (!state.running) return;
-  if (state.countdownTimer) { cancelCountdown(); return; }
-  let left = Number(settings.timer) || 0;
+  if (state.countdownTimer) {
+    if (minSeconds > 0) return; // already counting down
+    cancelCountdown();
+    state.vanishPending = false;
+    return;
+  }
+  let left = Math.max(Number(settings.timer) || 0, minSeconds);
   if (left <= 0) { doCaptureBackground(); return; }
   const el = $('countdown');
   el.hidden = false;
@@ -278,6 +297,12 @@ function doCaptureBackground() {
   flash();
   refreshBgButton();
   state.dirty = true;
+  if (state.vanishPending) {
+    state.vanishPending = false;
+    setVanish(true, { silent: true });
+    toast('Sfondo catturato! Rientra pure: sei invisibile. ✊ → ✌️ per riapparire.', 4200);
+    return;
+  }
   if (!currentFilter().needsBackground) {
     settings.filter = FILTERS.find((f) => f.needsBackground).id;
     saveSettings();
@@ -288,6 +313,73 @@ function doCaptureBackground() {
 
 function refreshBgButton() {
   $('btn-bg').classList.toggle('active', !!renderer?.bgSize);
+}
+
+// ---------------------------------------------------------------------------
+// Vanish: fist → V makes you disappear (only the background is left)
+// ---------------------------------------------------------------------------
+function setVanish(on, { silent = false } = {}) {
+  if (!state.running) return;
+  if (on && !renderer.hasBackgroundFor(video)) {
+    state.vanishPending = true;
+    toast("Per sparire mi serve lo sfondo vuoto: esci dall'inquadratura!", 4200);
+    startBackgroundCapture(3);
+    return;
+  }
+  state.vanishPending = false;
+  state.vanish.target = on ? 1 : 0;
+  state.dirty = true;
+  $('btn-vanish').classList.toggle('active', on);
+  if (on) ensureSegmenter();
+  if (!silent) toast(on ? '✌️ Sei sparito' : '✌️ Sei riapparso', 1600);
+  refreshGestureHud();
+}
+
+let segmenterLoading = null;
+function ensureSegmenter() {
+  if (segmenter.ready || segmenterLoading || !tracker.vision) return;
+  segmenterLoading = segmenter.init(tracker.lib, tracker.vision, tracker.delegate)
+    .catch((err) => {
+      // Without segmentation the effect still works using the difference from the background.
+      console.warn('Segmentazione persona non disponibile', err);
+    })
+    .finally(() => { segmenterLoading = null; });
+}
+
+function updateVanish(fresh, dt) {
+  const v = state.vanish;
+  if (v.target > 0 && !renderer.hasBackgroundFor(video)) {
+    // e.g. the iPad was rotated and the video size changed.
+    v.target = 0;
+    $('btn-vanish').classList.remove('active');
+    toast('Lo sfondo non corrisponde più alla fotocamera: ricatturalo per sparire di nuovo.', 4200);
+  }
+  const step = dt / VANISH_SECONDS;
+  v.t = v.target > v.t ? Math.min(v.target, v.t + step) : Math.max(v.target, v.t - step);
+  if (v.t > 0 && fresh && segmenter.ready) {
+    try {
+      const mask = segmenter.segment(video, performance.now());
+      if (mask) renderer.updateMask(mask);
+    } catch (err) {
+      console.warn(err);
+    }
+  }
+  if (v.t === 0 && renderer.hasMask) {
+    renderer.clearMask();
+    segmenter.resetHistory();
+  }
+}
+
+function refreshGestureHud() {
+  const el = $('gesture-hud');
+  let text = '';
+  if (state.vanish.target > 0) text = settings.gesture ? '👻 Invisibile · ✊ → ✌️ per riapparire' : '👻 Invisibile';
+  if (settings.gesture && state.gestureArmed) {
+    text = state.vanish.target > 0 ? '✊ ok · ora ✌️ per riapparire' : '✊ ok · ora ✌️ per sparire';
+  }
+  el.textContent = text;
+  el.hidden = !text;
+  el.classList.toggle('armed', settings.gesture && state.gestureArmed);
 }
 
 // ---------------------------------------------------------------------------
@@ -357,8 +449,14 @@ function polyArea(p) {
 
 function updateShape(now, fresh, dt) {
   const minArea = glCanvas.width * glCanvas.height * 0.0015;
-  let poly = state.hands.length ? handsPolygon(state.hands) : null;
+  const invisible = state.vanish.target > 0;
+  // Hands making the fist / V gesture don't draw the rectangle.
+  const framing = settings.gesture
+    ? state.hands.filter((_, i) => state.poses[i] !== 'fist' && state.poses[i] !== 'v')
+    : state.hands;
+  let poly = !invisible && framing.length ? handsPolygon(framing) : null;
   if (poly && polyArea(poly) < minArea) poly = null;
+  if (invisible) state.manual = null;
 
   if (poly) {
     state.manual = null;
@@ -387,7 +485,7 @@ function updateShape(now, fresh, dt) {
 // ---------------------------------------------------------------------------
 function drawOverlay() {
   octx.clearRect(0, 0, overlay.width, overlay.height);
-  if (!settings.skeleton || !state.hands.length) return;
+  if (!settings.skeleton || !state.hands.length || state.vanish.t > 0 || state.vanish.target > 0) return;
   const k = Math.max(0.6, overlay.height / 720);
   octx.lineCap = 'round';
   octx.lineJoin = 'round';
@@ -461,6 +559,17 @@ function loop(now) {
       state.detectMs = performance.now() - t0;
     }
   }
+  if (detected) {
+    if (settings.gesture) {
+      const g = gestures.update(state.hands, tracker.labels, video.videoWidth, video.videoHeight, now);
+      state.poses = g.poses;
+      if (g.armed !== state.gestureArmed) { state.gestureArmed = g.armed; refreshGestureHud(); }
+      if (g.triggered) setVanish(state.vanish.target === 0);
+    } else {
+      state.poses = [];
+    }
+  }
+  updateVanish(fresh, dt);
   updateShape(now, detected, dt);
   if (detected) state.lastDetectTs = now;
 
@@ -476,9 +585,11 @@ function loop(now) {
     invert: settings.invert,
     outline: settings.outline ? 3 * state.scale : 0,
     feather: settings.feather * state.scale,
+    vanish: state.vanish.t,
   });
   drawOverlay();
-  state.dirty = state.alpha > 0 && state.alpha < 1; // keep animating fades
+  // Keep animating fades.
+  state.dirty = (state.alpha > 0 && state.alpha < 1) || state.vanish.t !== state.vanish.target;
 
   if (capture.recording) {
     capture.frame(settings.skeleton);
@@ -628,7 +739,8 @@ function initControls() {
   buildFilterChips();
   $('btn-full').hidden = !(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
 
-  $('btn-bg').addEventListener('click', startBackgroundCapture);
+  $('btn-bg').addEventListener('click', () => startBackgroundCapture());
+  $('btn-vanish').addEventListener('click', () => setVanish(state.vanish.target === 0));
   $('btn-switch').addEventListener('click', switchCamera);
   $('btn-full').addEventListener('click', toggleFullscreen);
   $('btn-settings').addEventListener('click', () => { $('settings').hidden = !$('settings').hidden; });
@@ -646,6 +758,7 @@ function initControls() {
   $('btn-bg-clear').addEventListener('click', () => {
     renderer.clearBackground();
     refreshBgButton();
+    if (state.vanish.target > 0) setVanish(false, { silent: true });
     state.dirty = true;
     toast('Sfondo eliminato.');
   });
@@ -655,6 +768,7 @@ function initControls() {
   $('opt-invert').value = settings.invert ? '1' : '0';
   $('btn-invert').classList.toggle('active', settings.invert);
   $('opt-skeleton').checked = settings.skeleton;
+  $('opt-gesture').checked = settings.gesture;
   $('opt-outline').checked = settings.outline;
   $('opt-smooth').value = settings.smooth;
   $('opt-smooth-val').textContent = settings.smooth;
@@ -669,6 +783,12 @@ function initControls() {
   bind('opt-shape', 'change', (t) => { settings.shape = t.value; });
   bind('opt-invert', 'change', (t) => setInvert(t.value === '1'));
   bind('opt-skeleton', 'change', (t) => { settings.skeleton = t.checked; });
+  bind('opt-gesture', 'change', (t) => {
+    settings.gesture = t.checked;
+    gestures.reset();
+    state.gestureArmed = false;
+    refreshGestureHud();
+  });
   bind('opt-outline', 'change', (t) => { settings.outline = t.checked; });
   bind('opt-mirror', 'change', (t) => { settings.mirror = t.checked; });
   bind('opt-smooth', 'input', (t) => {
@@ -688,7 +808,11 @@ function initControls() {
     tracker.setEngine(settings.engine)
       .then(() => { toast(`Motore: ${tracker.delegate}`); })
       .catch((err) => { toast('Motore non disponibile: ' + err.message, 4000); return tracker.setEngine('CPU'); })
-      .finally(() => { state.trackerStatus = 'ready'; refreshEngineLabel(); });
+      .finally(() => {
+        state.trackerStatus = 'ready';
+        refreshEngineLabel();
+        segmenter.init(tracker.lib, tracker.vision, tracker.delegate).catch((err) => console.warn(err));
+      });
   });
 
   // Keyboard shortcuts (PC)
@@ -704,6 +828,7 @@ function initControls() {
       case 'arrowright': cycleFilter(1); break;
       case 'arrowleft': cycleFilter(-1); break;
       case 'b': startBackgroundCapture(); break;
+      case 'v': setVanish(state.vanish.target === 0); break;
       case 'i': setInvert(!settings.invert); break;
       case 'p': case ' ': e.preventDefault(); takePhoto(); break;
       case 'r': toggleRecording(); break;
@@ -793,6 +918,7 @@ function initTracker() {
       state.trackerStatus = 'ready';
       setStatus(`Pronto (${tracker.delegate})`, 'ok');
       refreshEngineLabel();
+      ensureSegmenter(); // small model, preload it so the first ✌️ is instant
       if (state.running) onReadyAndRunning();
     })
     .catch((err) => {
@@ -809,4 +935,4 @@ initTracker();
 requestAnimationFrame(loop);
 
 // Expose a tiny debug hook (used by automated tests).
-window.__rectfilter = { state, settings, tracker, selectFilter, doCaptureBackground };
+window.__rectfilter = { state, settings, tracker, segmenter, gestures, selectFilter, doCaptureBackground, setVanish };
