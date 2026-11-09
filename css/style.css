@@ -103,14 +103,6 @@ body.ui-hidden #btn-hide-restore { display: flex; }
 }
 .shutter:active { transform: scale(.9); background: rgba(255,255,255,.7); }
 
-.rec {
-  width: 44px; height: 44px; border-radius: 50%;
-  border: 3px solid #fff; background: var(--glass);
-  display: inline-flex; align-items: center; justify-content: center; padding: 0;
-}
-.rec span { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-2); transition: border-radius .2s ease, transform .2s ease; }
-.rec.on span { border-radius: 4px; transform: scale(.85); }
-
 #filters {
   display: flex; gap: 8px; max-width: 100%;
   overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
@@ -134,14 +126,12 @@ body.ui-hidden #btn-hide-restore { display: flex; }
 .chip[aria-checked="true"] { border-color: var(--accent); background: rgba(57, 255, 106, 0.16); }
 .chip[aria-checked="true"] .key { color: var(--accent); }
 
-#rec-timer { position: fixed; top: calc(64px + var(--safe-t)); left: 50%; transform: translateX(-50%); z-index: 6; }
 #gesture-hud {
   position: fixed; top: calc(12px + var(--safe-t)); left: 50%; transform: translateX(-50%); z-index: 6;
   font-size: 14px; padding: 8px 14px; pointer-events: none;
   transition: background .2s ease, border-color .2s ease;
 }
 #gesture-hud.armed { background: rgba(57, 255, 106, 0.25); border-color: var(--accent); }
-.rec-dot { background: var(--accent-2); animation: pulse 1s ease-in-out infinite; }
 
 /* ---------- Countdown & toast ---------- */
 #countdown {
@@ -254,7 +244,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 @media (max-width: 900px) {
   #gesture-hud { top: calc(118px + var(--safe-t)); }
-  #rec-timer { top: calc(164px + var(--safe-t)); }
 }
 
 @media (max-width: 560px) {
@@ -267,3 +256,12 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Embedded in the browser-extension panel ---------- */
+body.embed #gl, body.embed #overlay { object-fit: contain; transform: scaleX(-1); }
+body.embed #btn-switch, body.embed #btn-full, body.embed #btn-hide,
+body.embed #btn-hide-restore, body.embed #btn-photo { display: none !important; }
+body.embed #capture-row { position: absolute; left: 12px; bottom: 108px; }
+body.embed #toast { bottom: 120px; font-size: 13px; }
+body.embed #gesture-hud { top: 58px; font-size: 12px; }
+body.embed .sheet { top: 58px; max-height: calc(100vh - 66px); }

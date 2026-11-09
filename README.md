@@ -15,7 +15,7 @@ Web app per **PC, iPad e smartphone** che usa la webcam o la fotocamera, riconos
    - **Una mano**: pollice e indice diventano due angoli opposti di un rettangolo. Allargali o avvicinali per cambiarne la dimensione.
    - Se chiudi le dita (pollice contro indice) il rettangolo sparisce.
 3. Scegli il filtro dalla barra in basso.
-4. Con il pulsante bianco scatti una **foto**, con quello rosso registri un **video**. Su iPad, *Salva / Condividi* ti permette di salvarli nel Rullino.
+4. Con il pulsante bianco scatti una **foto**. Su iPad, *Salva / Condividi* ti permette di salvarla nel Rullino.
 
 > Senza mani puoi anche **trascinare col dito o col mouse** per disegnare un rettangolo, utile per provare i filtri. Un tocco senza trascinare lo cancella.
 
@@ -68,7 +68,39 @@ Consigli: luce costante, niente oggetti che si muovono sullo sfondo, fotocamera 
 
 ### Scorciatoie da tastiera (PC)
 
-`1`–`9`, `0` filtri · `←` `→` filtro precedente/successivo · `V` sparisci/riappari · `B` cattura sfondo · `I` dentro/fuori · `P` o `Spazio` foto · `R` video · `C` cambia fotocamera · `S` impostazioni · `H` nascondi interfaccia · `F` schermo intero · `Esc` chiudi
+`1`–`9`, `0` filtri · `←` `→` filtro precedente/successivo · `V` sparisci/riappari · `B` cattura sfondo · `I` dentro/fuori · `P` o `Spazio` foto · `C` cambia fotocamera · `S` impostazioni · `H` nascondi interfaccia · `F` schermo intero · `Esc` chiudi
+
+## Estensione per Google Meet e Microsoft Teams
+
+La stessa app è anche un'**estensione per Chrome e Edge**: applica il filtro alla tua webcam dentro le videochiamate, così gli altri partecipanti vedono il rettangolo, i filtri e la sparizione.
+
+Funziona su:
+
+- **Google Meet** (`meet.google.com`);
+- **Microsoft Teams nel browser** (`teams.microsoft.com`, `teams.live.com`, `teams.cloud.microsoft`).
+
+> **Teams desktop non è supportato**: l'app installata sul computer non accetta estensioni del browser. Entra nella riunione da Chrome o Edge ("Continua in questo browser").
+
+### Installazione
+
+1. Scarica il progetto (**Code › Download ZIP** su GitHub) ed estrai la cartella.
+2. Apri `chrome://extensions` (su Edge `edge://extensions`).
+3. Attiva **Modalità sviluppatore**.
+4. Premi **Carica estensione non pacchettizzata** e scegli la cartella del progetto, quella che contiene `manifest.json`.
+
+### Uso
+
+1. Apri una riunione su Meet o Teams e accendi la webcam. Se la pagina era già aperta, ricaricala.
+2. In basso a destra compare il pannello **Rectangular Filter** con l'anteprima e i filtri. Si può trascinare, ingrandire (⤢) e ridurre a icona (—).
+3. Tutto funziona come nell'app: rettangolo con pollici e indici, gesto ✊ → ✌️ per sparire, cattura dello sfondo.
+4. **Filtro: ON/OFF** nel pannello (o nel popup dell'estensione) riporta subito la webcam normale.
+5. Dall'icona dell'estensione puoi anche aprire **l'app a tutto schermo** in una scheda, senza server e senza internet.
+
+Note:
+
+- Nell'anteprima ti vedi a specchio; agli altri arriva l'immagine non specchiata, come per una webcam normale.
+- Se il pannello è lento o non risponde, l'estensione fa passare la webcam originale: la chiamata non resta mai senza video.
+- L'estensione chiede solo il permesso `storage` (per ricordare ON/OFF) e funziona solo sui siti elencati sopra. Le immagini restano sul computer.
 
 ## Avvio
 
@@ -123,7 +155,10 @@ js/segmenter.js         segmentazione della persona per la sparizione
 js/renderer.js          WebGL: video, sparizione, maschera del quadrilatero (SDF), filtro
 js/filters.js           elenco filtri e codice GLSL di ciascuno
 js/smoothing.js         One Euro filter per stabilizzare gli angoli
-js/capture.js           foto e registrazione video (MediaRecorder)
+js/capture.js           foto
+manifest.json           estensione per Chrome / Edge
+extension/              script dell'estensione (aggancio alla webcam, pannello, popup)
+vendor/                 MediaPipe e modelli inclusi nell'estensione (licenza Apache 2.0)
 manifest.webmanifest    installazione come app (PWA)
 ```
 

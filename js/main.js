@@ -7,7 +7,32 @@ import { GestureSequence } from './gestures.js';
 import { PersonSegmenter } from './segmenter.js';
 
 const $ = (id) => document.getElementById(id);
-const video = $('video');
+
+// Embedded mode: the page runs inside the browser extension's panel on a video-call
+// site. Frames arrive as ImageBitmaps from the host page instead of from a camera.
+const EMBED = new URLSearchParams(location.search).has('embed') && window.parent !== window;
+if (EMBED) document.body.classList.add('embed');
+
+/** A canvas that quacks like a <video> so the rest of the app doesn't care. */
+function makeFrameSource() {
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  Object.assign(c, { videoWidth: 0, videoHeight: 0, readyState: 0, currentTime: 0, paused: false });
+  c.push = (bitmap) => {
+    if (c.width !== bitmap.width || c.height !== bitmap.height) {
+      c.width = bitmap.width;
+      c.height = bitmap.height;
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    c.videoWidth = bitmap.width;
+    c.videoHeight = bitmap.height;
+    c.readyState = 4;
+    c.currentTime += 1;
+  };
+  return c;
+}
+
+const video = EMBED ? makeFrameSource() : $('video');
 const glCanvas = $('gl');
 const overlay = $('overlay');
 const octx = overlay.getContext('2d');
@@ -21,7 +46,7 @@ const DEFAULTS = {
   smooth: 5, feather: 2, timer: 5, quality: 0.75, camera: 'user', engine: 'auto',
   gesture: true,
 };
-const settings = { ...DEFAULTS, ...loadSettings(), mirror: true };
+const settings = { ...DEFAULTS, ...loadSettings(), mirror: !EMBED };
 
 function loadSettings() {
   try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch { return {}; }
@@ -219,7 +244,6 @@ async function startCamera(videoConstraints) {
 }
 
 async function switchCamera() {
-  if (capture.recording) return toast('Ferma la registrazione prima di cambiare fotocamera.');
   const prevId = state.stream?.getVideoTracks()[0]?.getSettings?.().deviceId;
   try {
     if (state.facing === 'user' || state.facing === 'environment') {
@@ -386,6 +410,19 @@ function refreshGestureHud() {
 // Geometry
 // ---------------------------------------------------------------------------
 function layout() {
+  if (EMBED) {
+    // Output at the camera's own resolution; the panel only previews it.
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (glCanvas.width !== w || glCanvas.height !== h) {
+      renderer.resize(w, h);
+      overlay.width = w;
+      overlay.height = h;
+    }
+    state.scale = 1 / previewFit().k;
+    state.map = { x: 0, y: 0, w, h };
+    return;
+  }
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const scale = Math.max(0.5, dpr * Number(settings.quality));
   const cssW = glCanvas.clientWidth || window.innerWidth;
@@ -403,6 +440,15 @@ function layout() {
   const vh = video.videoHeight;
   const s = Math.max(w / vw, h / vh);
   state.map = { x: (w - vw * s) / 2, y: (h - vh * s) / 2, w: vw * s, h: vh * s };
+}
+
+/** How the output canvas is fitted (object-fit: contain) in the embedded preview. */
+function previewFit() {
+  const r = glCanvas.getBoundingClientRect();
+  const w = glCanvas.width || 1;
+  const h = glCanvas.height || 1;
+  const k = Math.min(r.width / w, r.height / h) || 1;
+  return { r, k, ox: (r.width - w * k) / 2, oy: (r.height - h * k) / 2 };
 }
 
 function toCanvas(lm) {
@@ -534,6 +580,10 @@ function updateStats(now) {
 // ---------------------------------------------------------------------------
 function loop(now) {
   requestAnimationFrame(loop);
+  tick(now);
+}
+
+function tick(now) {
   if (!state.running || !renderer || video.readyState < 2 || !video.videoWidth) return;
 
   layout();
@@ -591,11 +641,6 @@ function loop(now) {
   // Keep animating fades.
   state.dirty = (state.alpha > 0 && state.alpha < 1) || state.vanish.t !== state.vanish.target;
 
-  if (capture.recording) {
-    capture.frame(settings.skeleton);
-    const secs = Math.floor((performance.now() - capture.startedAt) / 1000);
-    $('rec-time').textContent = `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
-  }
   if (state.wantSnapshot) {
     state.wantSnapshot = false;
     capture.snapshot(settings.skeleton).then((blob) => blob && showPreview(blob, 'photo'));
@@ -612,23 +657,13 @@ let previewFile = null;
 function showPreview(blob, kind) {
   closePreview();
   previewUrl = URL.createObjectURL(blob);
-  const ext = kind === 'photo' ? 'jpg' : blob.type.includes('mp4') ? 'mp4' : 'webm';
+  const ext = 'jpg';
   const name = `rectfilter-${stamp()}.${ext}`;
   try { previewFile = new File([blob], name, { type: blob.type }); } catch { previewFile = null; }
   const media = $('preview-media');
   media.innerHTML = '';
-  let el;
-  if (kind === 'photo') {
-    el = document.createElement('img');
-    el.alt = 'Foto scattata';
-  } else {
-    el = document.createElement('video');
-    el.controls = true;
-    el.playsInline = true;
-    el.loop = true;
-    el.muted = true;
-    el.autoplay = true;
-  }
+  const el = document.createElement('img');
+  el.alt = 'Foto scattata';
   el.src = previewUrl;
   media.appendChild(el);
   const dl = $('btn-download');
@@ -654,31 +689,15 @@ function takePhoto() {
   flash();
 }
 
-async function toggleRecording() {
-  if (!state.running) return;
-  const btn = $('btn-rec');
-  if (capture.recording) {
-    btn.classList.remove('on');
-    $('rec-timer').hidden = true;
-    const blob = await capture.stop();
-    if (blob && blob.size) showPreview(blob, 'video');
-    else toast('Registrazione vuota.');
-    return;
-  }
-  try {
-    capture.start();
-    btn.classList.add('on');
-    $('rec-time').textContent = '00:00';
-    $('rec-timer').hidden = false;
-  } catch (err) {
-    toast(err.message, 4000);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Manual rectangle (touch / mouse) — handy without hands or for quick tests
 // ---------------------------------------------------------------------------
 function pointerPos(e) {
+  if (EMBED) {
+    // The preview is letterboxed and flipped horizontally (selfie view).
+    const { r, k, ox, oy } = previewFit();
+    return [glCanvas.width - (e.clientX - r.left - ox) / k, (e.clientY - r.top - oy) / k];
+  }
   const r = glCanvas.getBoundingClientRect();
   return [(e.clientX - r.left) * state.scale, (e.clientY - r.top) * state.scale];
 }
@@ -749,7 +768,6 @@ function initControls() {
   $('btn-hide-restore').addEventListener('click', () => setUiHidden(false));
   $('btn-invert').addEventListener('click', () => setInvert(!settings.invert));
   $('btn-photo').addEventListener('click', takePhoto);
-  $('btn-rec').addEventListener('click', toggleRecording);
   $('btn-preview-close').addEventListener('click', closePreview);
   $('btn-share').addEventListener('click', async () => {
     if (!previewFile) return;
@@ -831,7 +849,6 @@ function initControls() {
       case 'v': setVanish(state.vanish.target === 0); break;
       case 'i': setInvert(!settings.invert); break;
       case 'p': case ' ': e.preventDefault(); takePhoto(); break;
-      case 'r': toggleRecording(); break;
       case 'c': if (!$('btn-switch').hidden) switchCamera(); break;
       case 'h': setUiHidden(!document.body.classList.contains('ui-hidden')); break;
       case 'f': toggleFullscreen(); break;
@@ -929,10 +946,48 @@ function initTracker() {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Embedded mode (browser extension panel inside a video-call page)
+// ---------------------------------------------------------------------------
+function initEmbed() {
+  $('start').hidden = true;
+  $('opt-mirror').checked = false;
+  $('opt-mirror').closest('label').hidden = true;
+  const host = window.parent;
+  const send = (msg, transfer) => host.postMessage({ source: 'rectfilter-panel', ...msg }, '*', transfer || []);
+
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (e.source !== host || !d || d.source !== 'rectfilter-page' || d.type !== 'frame') return;
+    const input = d.bitmap;
+    if (!renderer || renderer.lost) { send({ type: 'result', id: d.id, bitmap: input }, [input]); return; }
+    try {
+      video.push(input);
+      if (!state.running) {
+        state.running = true;
+        if (state.trackerStatus === 'ready') onReadyAndRunning();
+      }
+      tick(performance.now());
+      // Snapshot synchronously, right after drawing.
+      createImageBitmap(capture.compose(settings.skeleton))
+        .then((out) => { input.close(); send({ type: 'result', id: d.id, bitmap: out }, [out]); })
+        .catch(() => send({ type: 'result', id: d.id, bitmap: input }, [input]));
+    } catch (err) {
+      console.error(err);
+      send({ type: 'result', id: d.id, bitmap: input }, [input]);
+    }
+  });
+  send({ type: 'ready' });
+}
+
 initControls();
-$('btn-start').addEventListener('click', start);
 initTracker();
-requestAnimationFrame(loop);
+if (EMBED) {
+  initEmbed();
+} else {
+  $('btn-start').addEventListener('click', start);
+  requestAnimationFrame(loop);
+}
 
 // Expose a tiny debug hook (used by automated tests).
 window.__rectfilter = { state, settings, tracker, segmenter, gestures, selectFilter, doCaptureBackground, setVanish };

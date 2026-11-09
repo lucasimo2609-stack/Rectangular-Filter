@@ -2,9 +2,21 @@
 // Library, WASM and model are loaded from public CDNs the first time the app starts.
 
 export const MEDIAPIPE_VERSION = '0.10.21';
-export const MEDIAPIPE_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}`;
-export const HAND_MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+
+// Inside the browser extension everything is bundled (extensions may not load remote
+// code); on the web the library and models come from public CDNs.
+export const BUNDLED = location.protocol === 'chrome-extension:';
+const local = (path) => new URL(`../vendor/${path}`, import.meta.url).href;
+
+export const MEDIAPIPE_BASE = BUNDLED
+  ? local('mediapipe')
+  : `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}`;
+export const HAND_MODEL_URL = BUNDLED
+  ? local('models/hand_landmarker.task')
+  : 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+export const SEGMENTER_MODEL_URL = BUNDLED
+  ? local('models/selfie_segmenter.tflite')
+  : 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
 
 export const HAND_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 4],

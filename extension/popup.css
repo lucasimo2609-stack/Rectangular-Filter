@@ -1,0 +1,8 @@
+:root { color-scheme: dark; }
+body { margin: 0; padding: 14px; width: 280px; background: #121216; color: #f5f5f7; font: 13px/1.45 system-ui, sans-serif; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+h1 { margin: 0; font-size: 16px; }
+p { margin: 10px 0 12px; color: rgba(245, 245, 247, .65); }
+.switch { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch input { width: 18px; height: 18px; accent-color: #39ff6a; margin: 0; }
+button { width: 100%; padding: 10px; border: 0; border-radius: 10px; background: #39ff6a; color: #04130a; font: 600 13px system-ui, sans-serif; cursor: pointer; }
