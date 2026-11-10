@@ -31,6 +31,15 @@ Web app per **PC, iPad e smartphone** che usa la webcam o la fotocamera, riconos
 - La scena resta **dal vivo**: l'app riconosce la tua sagoma (segmentazione MediaPipe), confronta l'immagine con lo sfondo salvato e sostituisce solo i pixel che appartengono a te, comprese ombre e oggetti che tieni in mano.
 - Puoi attivarlo anche con il pulsante a forma di **fantasmino** in alto o con il tasto `V`. Il gesto si spegne da *Impostazioni › Gesto ✊ → ✌️*.
 
+### Preparare lo sfondo in anticipo
+
+Per sparire **all'istante**, senza conto alla rovescia, imposta lo sfondo prima. Alla prima accensione della fotocamera compare la scheda **Prepara lo sfondo** (la riapri quando vuoi dall'icona dello sfondo in alto):
+
+- **Carica un'immagine**: scegli una foto che hai già. Quando sparisci, tutta l'inquadratura viene sostituita da quell'immagine.
+- **Fotografa lo sfondo vuoto**: parte il conto alla rovescia, esci dall'inquadratura e la scena vuota viene salvata. Quando sparisci vengono sostituiti solo i tuoi pixel e il resto resta dal vivo.
+
+Lo sfondo **resta salvato** per le volte successive, finché non lo cambi o lo elimini. Nell'estensione è condiviso tra il pannello nella chiamata e l'app a tutto schermo.
+
 ### Effetto "Invisibile" (sparire dentro il rettangolo)
 
 1. Metti il dispositivo **fermo** (su un supporto o un treppiede).
@@ -90,11 +99,12 @@ Funziona su:
 
 ### Uso
 
-1. Apri una riunione su Meet o Teams e accendi la webcam. Se la pagina era già aperta, ricaricala.
-2. In basso a destra compare il pannello **Rectangular Filter** con l'anteprima e i filtri. Si può trascinare, ingrandire (⤢) e ridurre a icona (—).
-3. Tutto funziona come nell'app: rettangolo con pollici e indici, gesto ✊ → ✌️ per sparire, cattura dello sfondo.
-4. **Filtro: ON/OFF** nel pannello (o nel popup dell'estensione) riporta subito la webcam normale.
-5. Dall'icona dell'estensione puoi anche aprire **l'app a tutto schermo** in una scheda, senza server e senza internet.
+1. Apri Meet o Teams: in basso a destra compare subito la barretta **Filtro**, anche prima di entrare in una riunione. Se la pagina era già aperta, ricaricala.
+2. Appena la webcam si accende (già nella schermata di anteprima, prima di premere "Partecipa") la barretta si apre nel pannello **Rectangular Filter** e, se non hai ancora uno sfondo, ti propone **Prepara lo sfondo**. Il pannello si può trascinare, ingrandire (⤢) e ridurre a icona (—).
+3. Puoi preparare lo sfondo anche senza aprire una riunione: icona dell'estensione › **Prepara lo sfondo**.
+4. Tutto funziona come nell'app: rettangolo con pollici e indici, gesto ✊ → ✌️ per sparire, cattura dello sfondo.
+5. **Filtro: ON/OFF** nel pannello (o nel popup dell'estensione) riporta subito la webcam normale.
+6. Dall'icona dell'estensione puoi anche aprire **l'app a tutto schermo** in una scheda, senza server e senza internet.
 
 Note:
 
@@ -156,6 +166,7 @@ js/renderer.js          WebGL: video, sparizione, maschera del quadrilatero (SDF
 js/filters.js           elenco filtri e codice GLSL di ciascuno
 js/smoothing.js         One Euro filter per stabilizzare gli angoli
 js/capture.js           foto
+js/bgstore.js           salvataggio dello sfondo tra una sessione e l'altra
 manifest.json           estensione per Chrome / Edge
 extension/              script dell'estensione (aggancio alla webcam, pannello, popup)
 vendor/                 MediaPipe e modelli inclusi nell'estensione (licenza Apache 2.0)

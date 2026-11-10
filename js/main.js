@@ -5,6 +5,7 @@ import { PointSmoother } from './smoothing.js';
 import { Capture, stamp } from './capture.js';
 import { GestureSequence } from './gestures.js';
 import { PersonSegmenter } from './segmenter.js';
+import { bgStore } from './bgstore.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -184,7 +185,7 @@ function selectFilter(id) {
   refreshFilterChips();
   state.dirty = true;
   const f = currentFilter();
-  if (f.needsBackground && state.running && !renderer.hasBackgroundFor(video)) {
+  if (f.needsBackground && state.running && !haveBackground()) {
     toast("Per l'effetto Invisibile serve lo sfondo vuoto: esci dall'inquadratura.");
     startBackgroundCapture();
   } else {
@@ -314,17 +315,26 @@ function cancelCountdown() {
 
 function doCaptureBackground() {
   if (state.countdownTimer) cancelCountdown();
-  if (!video.videoWidth || !renderer.captureBackground(video)) {
+  if (!video.videoWidth) {
     toast('Cattura dello sfondo non riuscita, riprova.');
     return;
   }
+  const shot = document.createElement('canvas');
+  shot.width = video.videoWidth;
+  shot.height = video.videoHeight;
+  shot.getContext('2d').drawImage(video, 0, 0);
+  setBackground(shot, 'capture');
   flash();
-  refreshBgButton();
   state.dirty = true;
   if (state.vanishPending) {
     state.vanishPending = false;
     setVanish(true, { silent: true });
     toast('Sfondo catturato! Rientra pure: sei invisibile. ✊ → ✌️ per riapparire.', 4200);
+    return;
+  }
+  if (state.setupCapture) {
+    state.setupCapture = false;
+    toast('Sfondo pronto! Quando vuoi sparire fai ✊ → ✌️.', 4200);
     return;
   }
   if (!currentFilter().needsBackground) {
@@ -335,8 +345,138 @@ function doCaptureBackground() {
   toast('Sfondo catturato! Ora fai il rettangolo con le mani per sparire.', 3200);
 }
 
+// ---------------------------------------------------------------------------
+// Background plate: uploaded image or photo of the empty scene, kept between sessions
+// ---------------------------------------------------------------------------
+const bg = { source: null, kind: null };
+const BG_MAX_SIDE = 1920;
+
+/** Stores `image` (anything drawable) as the background and fits it to the camera. */
+function setBackground(image, kind, { persist = true } = {}) {
+  const iw = image.videoWidth || image.naturalWidth || image.width;
+  const ih = image.videoHeight || image.naturalHeight || image.height;
+  if (!iw || !ih) return false;
+  const k = Math.min(1, BG_MAX_SIDE / Math.max(iw, ih));
+  const c = document.createElement('canvas');
+  c.width = Math.round(iw * k);
+  c.height = Math.round(ih * k);
+  c.getContext('2d').drawImage(image, 0, 0, c.width, c.height);
+  bg.source = c;
+  bg.kind = kind;
+  fitBackground();
+  refreshBgButton();
+  state.dirty = true;
+  if (persist) {
+    bgStore.save({ dataUrl: c.toDataURL('image/jpeg', 0.9), kind }).then((ok) => {
+      if (!ok) toast('Sfondo impostato, ma non sono riuscito a salvarlo per la prossima volta.', 4000);
+    });
+  }
+  return true;
+}
+
+/** Draws the stored background at the camera's resolution (cover fit) into the renderer. */
+function fitBackground() {
+  if (!bg.source || !renderer || !video.videoWidth) return false;
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d');
+  const k = Math.max(w / bg.source.width, h / bg.source.height);
+  const dw = bg.source.width * k;
+  const dh = bg.source.height * k;
+  // An uploaded picture should read the right way round in the mirrored selfie view.
+  if (bg.kind === 'upload' && settings.mirror) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(bg.source, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  return renderer.captureBackground(c, w, h);
+}
+
+function haveBackground() {
+  return renderer.hasBackgroundFor(video) || fitBackground();
+}
+
+function clearBackground() {
+  bg.source = null;
+  bg.kind = null;
+  renderer.clearBackground();
+  bgStore.clear();
+  refreshBgButton();
+  state.dirty = true;
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function applyStored(value) {
+  if (!value || !value.dataUrl) {
+    bg.source = null;
+    bg.kind = null;
+    renderer?.clearBackground();
+    refreshBgButton();
+    return;
+  }
+  try {
+    setBackground(await loadImage(value.dataUrl), value.kind || 'capture', { persist: false });
+  } catch { /* corrupted entry: ignore */ }
+}
+
+const bgReady = bgStore.load().then(applyStored);
+bgStore.onChange(applyStored);
+
+async function uploadBackground(file) {
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  try {
+    setBackground(await loadImage(url), 'upload');
+    closeBgSetup();
+    toast('Sfondo impostato! Quando vuoi sparire fai ✊ → ✌️.', 4200);
+  } catch {
+    toast('Non riesco a leggere questa immagine. Prova con un JPG o un PNG.', 4000);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function photographBackground() {
+  if (!state.running && !EMBED) await start();
+  if (!state.running) {
+    toast(EMBED ? 'Accendi prima la webcam nella chiamata.' : 'Avvia prima la fotocamera.', 3500);
+    return;
+  }
+  closeBgSetup();
+  if (state.countdownTimer) return;
+  state.setupCapture = true;
+  startBackgroundCapture();
+}
+
+function openBgSetup() {
+  $('bg-status').textContent = bg.source
+    ? (bg.kind === 'upload' ? 'Sfondo attuale: immagine caricata.' : 'Sfondo attuale: foto dello sfondo vuoto.')
+    : 'Nessuno sfondo impostato.';
+  $('bg-remove').hidden = !bg.source;
+  $('bg-setup').hidden = false;
+}
+
+function closeBgSetup() { $('bg-setup').hidden = true; }
+
+/** Offers the setup once, as soon as the camera is on and no background exists yet. */
+async function maybeOfferBgSetup(force = false) {
+  await bgReady;
+  if (state.setupOffered && !force) return;
+  if (bg.source && !force) return;
+  state.setupOffered = true;
+  openBgSetup();
+}
+
 function refreshBgButton() {
-  $('btn-bg').classList.toggle('active', !!renderer?.bgSize);
+  $('btn-bg').classList.toggle('active', !!bg.source || !!renderer?.bgSize);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +484,7 @@ function refreshBgButton() {
 // ---------------------------------------------------------------------------
 function setVanish(on, { silent = false } = {}) {
   if (!state.running) return;
-  if (on && !renderer.hasBackgroundFor(video)) {
+  if (on && !haveBackground()) {
     state.vanishPending = true;
     toast("Per sparire mi serve lo sfondo vuoto: esci dall'inquadratura!", 4200);
     startBackgroundCapture(3);
@@ -372,7 +512,7 @@ function ensureSegmenter() {
 
 function updateVanish(fresh, dt) {
   const v = state.vanish;
-  if (v.target > 0 && !renderer.hasBackgroundFor(video)) {
+  if (v.target > 0 && !haveBackground()) {
     // e.g. the iPad was rotated and the video size changed.
     v.target = 0;
     $('btn-vanish').classList.remove('active');
@@ -587,6 +727,7 @@ function tick(now) {
   if (!state.running || !renderer || video.readyState < 2 || !video.videoWidth) return;
 
   layout();
+  if (bg.source && !renderer.hasBackgroundFor(video)) fitBackground(); // camera size changed
   const fresh = video.currentTime !== state.lastVideoTime;
   if (!fresh && !state.dirty) return;
 
@@ -636,6 +777,7 @@ function tick(now) {
     outline: settings.outline ? 3 * state.scale : 0,
     feather: settings.feather * state.scale,
     vanish: state.vanish.t,
+    bgFull: bg.kind === 'upload',
   });
   drawOverlay();
   // Keep animating fades.
@@ -758,7 +900,20 @@ function initControls() {
   buildFilterChips();
   $('btn-full').hidden = !(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
 
-  $('btn-bg').addEventListener('click', () => startBackgroundCapture());
+  $('btn-bg').addEventListener('click', () => {
+    if (state.countdownTimer) { cancelCountdown(); state.vanishPending = false; return; }
+    openBgSetup();
+  });
+  $('bg-upload').addEventListener('click', () => $('bg-file').click());
+  $('bg-file').addEventListener('change', (e) => { uploadBackground(e.target.files[0]); e.target.value = ''; });
+  $('bg-photo').addEventListener('click', photographBackground);
+  $('bg-later').addEventListener('click', closeBgSetup);
+  $('bg-remove').addEventListener('click', () => {
+    if (state.vanish.target > 0) setVanish(false, { silent: true });
+    clearBackground();
+    closeBgSetup();
+    toast('Sfondo eliminato.');
+  });
   $('btn-vanish').addEventListener('click', () => setVanish(state.vanish.target === 0));
   $('btn-switch').addEventListener('click', switchCamera);
   $('btn-full').addEventListener('click', toggleFullscreen);
@@ -774,10 +929,8 @@ function initControls() {
     try { await navigator.share({ files: [previewFile], title: 'Rectangular Filter' }); } catch { /* cancelled */ }
   });
   $('btn-bg-clear').addEventListener('click', () => {
-    renderer.clearBackground();
-    refreshBgButton();
     if (state.vanish.target > 0) setVanish(false, { silent: true });
-    state.dirty = true;
+    clearBackground();
     toast('Sfondo eliminato.');
   });
 
@@ -808,7 +961,7 @@ function initControls() {
     refreshGestureHud();
   });
   bind('opt-outline', 'change', (t) => { settings.outline = t.checked; });
-  bind('opt-mirror', 'change', (t) => { settings.mirror = t.checked; });
+  bind('opt-mirror', 'change', (t) => { settings.mirror = t.checked; fitBackground(); });
   bind('opt-smooth', 'input', (t) => {
     settings.smooth = Number(t.value);
     $('opt-smooth-val').textContent = t.value;
@@ -853,7 +1006,7 @@ function initControls() {
       case 'h': setUiHidden(!document.body.classList.contains('ui-hidden')); break;
       case 'f': toggleFullscreen(); break;
       case 's': $('settings').hidden = !$('settings').hidden; break;
-      case 'escape': $('settings').hidden = true; closePreview(); setUiHidden(false); break;
+      case 'escape': closeBgSetup(); $('settings').hidden = true; closePreview(); setUiHidden(false); break;
       default:
     }
   });
@@ -902,6 +1055,7 @@ async function start() {
     $('start').hidden = true;
     state.running = true;
     state.dirty = true;
+    maybeOfferBgSetup();
     if (state.trackerStatus === 'loading') setStatus('Carico il riconoscimento mani…', 'warn');
     if (state.trackerStatus === 'ready') onReadyAndRunning();
   } catch (err) {
@@ -965,6 +1119,7 @@ function initEmbed() {
       video.push(input);
       if (!state.running) {
         state.running = true;
+        maybeOfferBgSetup();
         if (state.trackerStatus === 'ready') onReadyAndRunning();
       }
       tick(performance.now());
@@ -982,6 +1137,8 @@ function initEmbed() {
 
 initControls();
 initTracker();
+// "?setup" (from the extension popup): go straight to the background setup.
+if (new URLSearchParams(location.search).has('setup')) maybeOfferBgSetup(true);
 if (EMBED) {
   initEmbed();
 } else {

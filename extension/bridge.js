@@ -37,10 +37,15 @@
     });
   }
 
-  function createPanel() {
-    if (host || !document.body) return;
+  let expandPanel = null;
+
+  /** `open`: show the full panel; otherwise only the small bar (nothing is loaded yet). */
+  function createPanel(open) {
+    if (host) { if (open && expandPanel) expandPanel(); return; }
+    if (!document.body) return;
     let size = 'small';
-    let minimized = false;
+    let minimized = !open;
+    let openedOnce = open;
 
     host = style(document.createElement('div'), {
       all: 'initial', position: 'fixed', right: '16px', bottom: '16px', zIndex: '2147483647',
@@ -61,17 +66,23 @@
     bar.append(title, toggleBtn, sizeBtn, minBtn);
 
     const frame = document.createElement('iframe');
-    frame.src = chrome.runtime.getURL('index.html?embed=1');
+    let loaded = false;
+    const load = () => {
+      if (loaded) return;
+      loaded = true;
+      frame.src = chrome.runtime.getURL('index.html?embed=1');
+    };
     frame.title = 'Rectangular Filter';
     style(frame, { border: '0', display: 'block', background: '#000', colorScheme: 'dark' });
 
     function layout() {
       const [w, h] = SIZES[size];
+      if (!minimized) load();
       // Keep the iframe alive (1px) when minimised: it still has to process frames.
       style(frame, minimized
         ? { width: '1px', height: '1px', opacity: '0' }
         : { width: `min(${w}px, calc(100vw - 32px))`, height: `min(${h}px, calc(100vh - 80px))`, opacity: '1' });
-      title.textContent = minimized ? 'RF' : 'Rectangular Filter';
+      title.textContent = minimized ? 'Filtro' : 'Rectangular Filter';
       sizeBtn.style.display = minimized ? 'none' : '';
       minBtn.textContent = minimized ? '▢' : '—';
       minBtn.title = minimized ? 'Riapri il pannello' : 'Riduci a icona';
@@ -79,7 +90,7 @@
 
     toggleBtn.addEventListener('click', () => chrome.storage.local.set({ enabled: !enabled }));
     sizeBtn.addEventListener('click', () => { size = size === 'small' ? 'large' : 'small'; layout(); });
-    minBtn.addEventListener('click', () => { minimized = !minimized; layout(); });
+    minBtn.addEventListener('click', () => { minimized = !minimized; openedOnce = true; layout(); });
 
     // Drag by the title bar.
     let drag = null;
@@ -100,14 +111,27 @@
     bar.addEventListener('pointerup', endDrag);
     bar.addEventListener('pointercancel', endDrag);
 
+    // The camera came on: load the app (it must process frames) and open the panel
+    // the first time, so the background can be set before joining.
+    openedOnce = open;
+    expandPanel = () => {
+      load();
+      if (!openedOnce) { openedOnce = true; minimized = false; layout(); }
+    };
+
     shadow.append(bar, frame);
     layout();
     applyEnabled();
     document.body.appendChild(host);
   }
 
-  document.addEventListener('rectfilter:camera', () => {
-    if (document.body) createPanel();
-    else document.addEventListener('DOMContentLoaded', createPanel, { once: true });
-  });
+  const whenBody = (fn) => {
+    if (document.body) fn();
+    else document.addEventListener('DOMContentLoaded', fn, { once: true });
+  };
+
+  document.addEventListener('rectfilter:camera', () => whenBody(() => createPanel(true)));
+
+  // Be there before the call starts: a small bar as soon as the site opens.
+  if (window.top === window) whenBody(() => createPanel(false));
 })();

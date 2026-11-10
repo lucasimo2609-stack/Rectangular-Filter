@@ -28,6 +28,7 @@ uniform float uFeather;  // edge softness in px
 uniform float uHasBg;
 uniform sampler2D uMask; // person segmentation (r: 0 = background, 1 = person)
 uniform float uHasMask;
+uniform float uBgFull;   // 1.0 = the background is an unrelated picture: replace the whole frame
 uniform float uVanish;   // 0 = you are visible, 1 = only the background is left
 
 vec2 toUV(vec2 p) {
@@ -45,6 +46,7 @@ vec3 bgAt(vec2 uv) { return texture2D(uBg, clamp(uv, 0.0, 1.0)).rgb; }
 // whatever the segmentation misses). Over-covering is harmless because those
 // pixels get replaced by the real background anyway.
 float personMask(vec2 uv) {
+  if (uBgFull > 0.5) return 1.0;
   float m = 0.0;
   if (uHasMask > 0.5) {
     vec2 r = uTexel * 14.0;
@@ -207,13 +209,14 @@ export class Renderer {
   }
 
   /** Copies the current video frame into the background texture. */
-  captureBackground(video) {
+  /** Uses `source` (video, canvas or image of size w x h) as the background plate. */
+  captureBackground(source, w = source.videoWidth, h = source.videoHeight) {
     if (this.lost) return false;
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.texBg);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
-    this.bgSize = [video.videoWidth, video.videoHeight];
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, source);
+    this.bgSize = [w, h];
     return true;
   }
 
@@ -268,6 +271,7 @@ export class Renderer {
     gl.uniform1f(u.uHasBg, this.hasBackgroundFor(s.video) ? 1 : 0);
     gl.uniform1f(u.uHasMask, this.hasMask ? 1 : 0);
     gl.uniform1f(u.uVanish, s.vanish || 0);
+    gl.uniform1f(u.uBgFull, s.bgFull ? 1 : 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }

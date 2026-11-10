@@ -5,3 +5,7 @@ document.getElementById('open').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('index.html') });
   window.close();
 });
+document.getElementById('setup').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('index.html?setup=1') });
+  window.close();
+});
